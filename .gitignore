@@ -1,0 +1,57 @@
+.test-artifacts/
+dist/
+node_modules/
+*.log
+
+# Generated output, caches and local backups
+coverage/
+.cache/
+.backups/
+*.tmp
+*.bak
+*.tsbuildinfo
+
+# Local research exports (keep product documentation and tests tracked)
+/research/
+/.research/
+/tmp-chat-research-*/
+/architecture.txt
+/improvement-checklist.txt
+/streaming-investigation.md
+/streaming-implementation.md
+/continuation-fix-v*.md
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+.aws/
+.ssh/
+.codex/
+.vscode/
+.idea/
+
+# Browser profiles, authentication state and browser test output
+**/edge-profile-*/
+**/chrome-profile-*/
+**/chromium-profile-*/
+.browser-profiles/
+browser-profiles/
+user-data/
+.user-data/
+playwright/.auth/
+storage-state*.json
+test-results/
+playwright-report/
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
