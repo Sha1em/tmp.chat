@@ -4,7 +4,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const root = path.resolve(__dirname, '..');
 function crc32(buffer) { let crc = 0xffffffff; for (const byte of buffer) { crc ^= byte; for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1)); } return (crc ^ 0xffffffff) >>> 0; }
-const files = ['manifest.json','background.js','agent.js','content.js','lib/core.js','lib/selection.js','lib/layout.js','lib/answer.js','icons/16.png','icons/32.png','icons/48.png','icons/128.png','README.md','PRIVACY.md'];
+const files = ['manifest.json','background.js','agent.js','content.js','lib/core.js','lib/selection.js','lib/layout.js','lib/answer.js','icons/16.png','icons/32.png','icons/48.png','icons/128.png','README.md','PRIVACY.md','CHECKPOINT.md'];
 const local = [], central = []; let offset = 0;
 for (const file of files) {
   const name = Buffer.from(file), data = fs.readFileSync(path.join(root, file)), compressed = zlib.deflateRawSync(data), crc = crc32(data);

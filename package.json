@@ -1,6 +1,6 @@
 {
   "name": "tmp-chat",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "description": "A dependency-free browser extension for contextual ChatGPT side conversations.",
   "scripts": {

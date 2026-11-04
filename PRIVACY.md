@@ -4,6 +4,8 @@ This extension has no operator-controlled AI server, conversation database, trac
 
 When you ask a question, tmp.chat copies a bounded selection, surrounding text, and the originating user question into a dedicated ChatGPT Temporary Chat. ChatGPT sends that information to OpenAI through its normal website. AI processing does not occur entirely on your computer. Your ChatGPT account limits, workspace rules, and OpenAI's policies continue to apply.
 
+Deliberately opening tmp.chat starts loading its one inactive ChatGPT helper while you read and type. This contacts ChatGPT normally using your signed-in browser session. Preparation may turn on native Temporary Chat, but does not insert or submit your selection, question or pasted context and does not choose personalization or change answer speed. These remain local until Send. Highlighting alone or passive page loading does not prepare a helper. A verified empty, inactive and unchanged helper can expire after approximately three minutes; local panel drafts survive, while native drafts and submitted conversations are retained.
+
 The selected context and side transcript are held in extension memory and `chrome.storage.session`, which is browser-session storage rather than permanent local storage. They survive an extension worker restart, and are removed when you discard a tangent, hand it back to ChatGPT, close its source tab, navigate the source away from ChatGPT, or end the browser session. There is no extension transcript history. Saving or copying text yourself creates a copy under your control.
 
 The response-speed preference is stored separately in `chrome.storage.local` so it can survive browser restarts. It contains only the choice to use the current ChatGPT setting or prefer Instant; it contains no conversation content. Using the current setting makes no speed-control changes. If you opt into Prefer Instant, the extension may operate the native helper composer effort control. ChatGPT may share that preference with other chats; the extension cannot promise a tab-specific setting.
@@ -27,6 +29,6 @@ Streaming diagnostics additionally record first-occurrence processing timestamps
 - **Host access to chatgpt.com:** inject the selection action and panel; operate the dedicated ChatGPT page; read its rendered answer.
 - **scripting:** inject the small automation adapter into the extension-owned helper tab.
 - **storage:** keep bounded ephemeral session state across service-worker suspension, and retain the content-free response-speed preference locally.
-- **alarms:** detect a stalled request while the extension worker is sleeping. The watchdog is removed when the request finishes or the tangent is discarded.
+- **alarms:** detect a stalled request while the extension worker is sleeping, and perform a one-shot check for an unused empty helper after approximately three minutes. The watchdog is removed when the request finishes or the tangent is discarded; unused-helper expiry is cancelled on Send or Discard.
 
 No `<all_urls>`, browser-history, cookies, debugger, downloads, native-messaging, or response-header override permission is requested.

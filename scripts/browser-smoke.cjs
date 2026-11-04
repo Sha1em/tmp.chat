@@ -49,7 +49,9 @@ const debug=process.argv.includes('--debug');
         const {requestId,request}=event.params;const url=new URL(request.url);
         if(debug)console.error('Intercepted',url.origin+url.pathname+url.search,event.params.resourceType);
         const isDocument=event.params.resourceType==='Document';
-        const body=url.hostname==='chatgpt.com'&&isDocument?fixture(url.searchParams.get('temporary-chat')==='true',url.searchParams.get('fixture')||''):'';
+        let body=url.hostname==='chatgpt.com'&&isDocument?fixture(url.searchParams.get('temporary-chat')==='true',url.searchParams.get('fixture')||''):'';
+        if (process.argv.includes('--startup-only') && body && url.searchParams.get('temporary-chat')==='true') body=body.replace('</body>', '<img src="/tmp-chat-startup-hold" hidden></body>');
+        if (url.pathname==='/tmp-chat-startup-hold') await delay(2000);
         await cdp.send('Fetch.fulfillRequest',{requestId,responseCode:body?200:204,responseHeaders:[{name:'Content-Type',value:body?'text/html; charset=utf-8':'text/plain'}],body:Buffer.from(body).toString('base64')},event.sessionId);
       }
       if(event.method==='Runtime.exceptionThrown')errors.push(event.params.exceptionDetails.exception?.description||event.params.exceptionDetails.text);
@@ -67,6 +69,14 @@ const debug=process.argv.includes('--debug');
   // interception before its first network navigation. The production extension
   // still calls the real Tabs API and all its other code runs unchanged.
   await cdp.evaluate(`(()=>{const create=chrome.tabs.create.bind(chrome.tabs);chrome.tabs.create=async props=>{const tab=await create({...props,url:'about:blank'});await new Promise(resolve=>setTimeout(resolve,1000));const url=new URL(props.url);if(globalThis.__tmpFixtureMode)url.searchParams.set('fixture',globalThis.__tmpFixtureMode);return chrome.tabs.update(tab.id,{url:url.href});};return true;})()`,worker);
+  if (process.argv.includes('--startup-only')) {
+    await require('./startup-regressions.cjs')({ cdp, source, worker, sessions, waitFor, delay });
+    assert.deepEqual(errors.filter(e => !e.includes('net::ERR')), []); return;
+  }
+  if (process.argv.includes('--helper-only')) {
+    await require('./helper-regressions.cjs')({ cdp, source, worker, sessions, waitFor, delay });
+    assert.deepEqual(errors.filter(e => !e.includes('net::ERR')), []); return;
+  }
   await require('./streaming-regressions.cjs')({ cdp, source, worker, sessions, waitFor, delay });
   if (process.argv.includes('--streaming-only')) { assert.deepEqual(errors.filter(e => !e.includes('net::ERR')), []); return; }
   await require('./ui-regressions.cjs')({ cdp, source, worker, waitFor, delay });
@@ -77,13 +87,14 @@ const debug=process.argv.includes('--debug');
   const inspect=()=>cdp.evaluate(`(()=>{const h=document.getElementById('tmp-chat-root');const s=h.shadowRoot;const panel=h.getBoundingClientRect();const text=document.querySelector('[data-message-author-role="assistant"] .markdown').getBoundingClientRect();return {visible:getComputedStyle(h).display!=='none',panelLeft:panel.left,panelRight:panel.right,textRight:text.right,compact:!s.querySelector('.dock').hidden,messages:s.querySelectorAll('.message').length,status:s.querySelector('.status').textContent,error:s.querySelector('#error span').textContent,errorVisible:!s.querySelector('#error').hidden,bodyWidth:document.documentElement.scrollWidth,viewport:innerWidth};})()`,source);
   await cdp.evaluate(`(()=>{const p=document.getElementById('select-me');const range=document.createRange();range.selectNodeContents(p);const s=getSelection();s.removeAllRanges();s.addRange(range);document.dispatchEvent(new Event('selectionchange'));})()`,source);
   await waitFor(()=>cdp.evaluate('!document.getElementById("tmp-chat-selection-root").shadowRoot.querySelector("button").hidden',source),'selection action');
+  assert.equal((await cdp.send('Target.getTargets')).targetInfos.filter(t=>t.type==='page').length,baselinePages,'Highlighting alone must not create a helper');
   await cdp.evaluate('document.getElementById("tmp-chat-selection-root").shadowRoot.querySelector("button").click()',source);
   await waitFor(async()=>{const data=await inspect();return data.visible;},'panel opening');
   let data=await inspect();assert.ok(data.textRight<data.panelLeft-8,JSON.stringify(data));assert.ok(data.bodyWidth<=data.viewport,JSON.stringify(data));
   const targetsBefore=(await cdp.send('Target.getTargets')).targetInfos.filter(t=>t.type==='page').length;
-  assert.equal(targetsBefore,baselinePages,'Selecting a passage must not create a helper tab');
+  assert.ok(targetsBefore>=baselinePages && targetsBefore<=baselinePages+1,'Opening may prepare exactly one helper');
   await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},source).then(r=>fs.writeFileSync(path.join(artifacts,'panel-ready.png'),Buffer.from(r.data,'base64')));
-  console.log('PASS selection opens a non-overlapping panel without creating the helper');
+  console.log('PASS highlighting stays lazy; selection action opens a non-overlapping panel with at most one prepared helper');
   await cdp.evaluate(`(()=>{const s=document.getElementById('tmp-chat-root').shadowRoot;const box=s.querySelector('#question');box.value='Explain this simply.';box.dispatchEvent(new Event('input'));s.querySelector('form').requestSubmit();s.querySelector('form').requestSubmit();})()`,source);
   await waitFor(async()=>{const d=await inspect();if(d.errorVisible)throw Error(d.error);return d.status==='Temporary · your ChatGPT'&&d.messages===2;},'first streamed answer',35000);
   const helperTarget=(await cdp.send('Target.getTargets')).targetInfos.find(t=>t.type==='page'&&t.url.includes('temporary-chat=true'));

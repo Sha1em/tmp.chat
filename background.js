@@ -11,6 +11,8 @@ const ready = Promise.all([
   chrome.storage.local.get(PREFERENCES_KEY).then(result => { preferences = { speed: result[PREFERENCES_KEY]?.speed === 'instant' ? 'instant' : 'current' }; })
 ]);
 let queue = Promise.resolve(), saveTimer = null, firstPatchRequest = null, firstEventRequest = null;
+let preparationJob = null;
+const PREWARM_MS = 180000;
 function serial(fn) { const task = queue.then(() => ready).then(fn); queue = task.catch(() => {}); return task; }
 // Diagnostics deliberately contain only command/state metadata, never chat content.
 function diagnostic(event, details = {}) { console.debug('[tmp.chat worker]', event, details); }
@@ -45,7 +47,7 @@ function newSession(tabId, context) {
 }
 function publicState() {
   if (!session) return null;
-  const { ownerTabId, helperTabId, dispatched, ...state } = session;
+  const { ownerTabId, helperTabId, helperDocumentId, warmExpiresAt, dispatched, ...state } = session;
   return { ...state, preferences: { ...preferences }, hasHelper: Number.isInteger(helperTabId) };
 }
 async function persist() {
@@ -71,7 +73,8 @@ async function closeHelper(state) {
   try {
     const tab = await chrome.tabs.get(state.helperTabId);
     // Never close an unrelated tab if the user navigated the helper elsewhere.
-    if ((tab.url || '').startsWith('https://chatgpt.com/')) await chrome.tabs.remove(tab.id);
+    const pendingOwned = (!tab.url || tab.url === 'about:blank') && tab.pendingUrl && tab.pendingUrl.startsWith('https://chatgpt.com/') && new URL(tab.pendingUrl).hash === '#tmp-chat-helper';
+    if ((tab.url || '').startsWith('https://chatgpt.com/') || pendingOwned) await chrome.tabs.remove(tab.id);
   } catch {}
 }
 async function clearSession() {
@@ -80,6 +83,7 @@ async function clearSession() {
   await persist();
   if (previous) chrome.tabs.sendMessage(previous.ownerTabId, { type: 'tmp:state', state: null }).catch(() => {});
   await chrome.alarms.clear('tmp:watchdog');
+  await chrome.alarms.clear('tmp:prewarm');
   await closeHelper(previous);
 }
 async function fail(id, requestId, text, uncertain = false, code = '', stage = '') {
@@ -99,15 +103,17 @@ async function helperStage(id, requestId, stage) {
     diagnostic('helper:stage', { stage }); await publish(); return true;
   });
 }
-async function waitForLoad(tabId, timeout = 25000) {
+async function waitForDocument(tabId, timeout = 25000) {
   const tab = await chrome.tabs.get(tabId);
-  const settled = value => value.status === 'complete' && (!value.pendingUrl || value.pendingUrl === value.url);
+  const settled = value => (value.url || '').startsWith('https://chatgpt.com/') && (!value.pendingUrl || value.pendingUrl === value.url);
+  const foreign = value => value.status === 'complete' && value.url && !/^(?:about:blank|https:\/\/chatgpt\.com\/)/.test(value.url) && !value.pendingUrl;
+  if (foreign(tab)) throw helperError('HELPER_NAVIGATION', 'helper_navigation', HELPER_FAILURES.helper_navigation[1]);
   if (settled(tab)) return;
   await new Promise((resolve, reject) => {
     let finished = false;
     const timer = setTimeout(() => done(helperError('HELPER_LOAD_TIMEOUT', 'helper_loading', 'The ChatGPT helper page did not finish loading. Open ChatGPT to inspect it, then choose Check again. Nothing was sent.')), timeout);
-    function inspect() { chrome.tabs.get(tabId).then(value => { if (settled(value)) done(); }).catch(done); }
-    function onUpdated(id, change) { if (id === tabId && (change.status === 'complete' || change.url)) inspect(); }
+    function inspect() { chrome.tabs.get(tabId).then(value => { if (foreign(value)) done(helperError('HELPER_NAVIGATION', 'helper_navigation', HELPER_FAILURES.helper_navigation[1])); else if (settled(value)) done(); }).catch(done); }
+    function onUpdated(id) { if (id === tabId) inspect(); }
     function onRemoved(id) { if (id === tabId) done(helperError('HELPER_CLOSED', 'helper_loading', 'The tmp.chat background tab was closed.')); }
     function done(error) { if (finished) return; finished = true; clearTimeout(timer); chrome.tabs.onUpdated.removeListener(onUpdated); chrome.tabs.onRemoved.removeListener(onRemoved); error ? reject(error) : resolve(); }
     chrome.tabs.onUpdated.addListener(onUpdated); chrome.tabs.onRemoved.addListener(onRemoved);
@@ -115,37 +121,83 @@ async function waitForLoad(tabId, timeout = 25000) {
     inspect();
   });
 }
+function prepareHelper(id) {
+  if (preparationJob?.id === id) return preparationJob.promise;
+  const job = { id };
+  preparationJob = job;
+  job.promise = (async () => {
+    let tabId, stage = 'helper_creating', documentId;
+    const startedAt = Date.now();
+    const owned = () => session?.id === id && session.helperTabId === tabId;
+    const phase = async value => {
+      stage = value;
+      diagnostic('startup:phase', { phase: value, at: Date.now(), elapsedMs: Date.now() - startedAt });
+      if (session?.id === id && C.busy(session.status)) await helperStage(id, session.requestId, value);
+    };
+    try {
+      await serial(async () => {
+        if (session?.id !== id) return;
+        tabId = session.helperTabId;
+        if (!Number.isInteger(tabId)) {
+          const tab = await chrome.tabs.create({ url: HELPER, active: false });
+          tabId = tab.id; session.helperTabId = tabId; delete session.helperDocumentId;
+          await chrome.tabs.update(tabId, { autoDiscardable: false });
+          await publish();
+        }
+        documentId = session.helperDocumentId;
+      });
+      if (!Number.isInteger(tabId) || !owned()) return null;
+      await phase('helper_loading'); await waitForDocument(tabId);
+      if (!owned()) return null;
+      await phase('helper_navigation');
+      let connection;
+      // A warm adapter retains the continuity proof. Do not reinject routinely.
+      if (documentId) {
+        try { connection = await withTimeout(chrome.tabs.sendMessage(tabId, { type: 'tmp:probe' }, { documentId }), 5000, helperError('HELPER_HANDSHAKE_TIMEOUT', 'agent_ready', HELPER_FAILURES.agent_ready[1])); } catch {}
+      }
+      if (!connection?.ok || connection.protocol !== 2 || connection.ready !== true) {
+        await phase('agent_injecting');
+        const injection = await withTimeout(chrome.scripting.executeScript({ target: { tabId }, injectImmediately: true, files: ['lib/core.js', 'lib/selection.js', 'lib/answer.js', 'agent.js'] }), 15000,
+          helperError('HELPER_INJECTION_TIMEOUT', stage, HELPER_FAILURES.agent_injecting[1]));
+        documentId = injection?.[0]?.documentId;
+        await phase('agent_ready');
+        connection = await withTimeout(chrome.tabs.sendMessage(tabId, { type: 'tmp:probe' }, documentId ? { documentId } : undefined), 5000,
+          helperError('HELPER_HANDSHAKE_TIMEOUT', stage, HELPER_FAILURES.agent_ready[1]));
+      }
+      if (!connection?.ok || connection.ready !== true || connection.protocol !== 2) throw helperError('HELPER_HANDSHAKE', 'agent_ready', HELPER_FAILURES.agent_ready[1]);
+      if (!owned()) return null;
+      await serial(async () => { if (owned()) { session.helperDocumentId = documentId; session.probe = safeProbe(connection.probe); await persist(); } });
+      await phase('composer_ready');
+      const prepared = await withTimeout(chrome.tabs.sendMessage(tabId, { type: 'tmp:prepare' }, documentId ? { documentId } : undefined), 35000,
+        helperError('HELPER_PREPARE_TIMEOUT', 'composer_ready', 'The ChatGPT helper did not become ready. Open ChatGPT to inspect it, then choose Check again. Nothing was sent.'));
+      if (!prepared?.ok) throw helperError(stageCode(prepared?.code) || 'HELPER_PREPARE', stageName(prepared?.stage) || 'composer_ready', C.clip(prepared?.error, 500) || 'The ChatGPT helper could not be prepared. Open ChatGPT to inspect it. Nothing was sent.');
+      if (!owned()) return null;
+      diagnostic('startup:prepared', { at: Date.now(), elapsedMs: Date.now() - startedAt, probe: safeProbe(prepared.probe) });
+      return { tabId, documentId, probe: safeProbe(prepared.probe) };
+    } catch (error) {
+      if (!error.stage) {
+        const [code, text] = HELPER_FAILURES[stage] || ['HELPER_PREPARE', 'The ChatGPT helper could not be prepared. Open ChatGPT to inspect it. Nothing was sent.'];
+        throw helperError(code, stage, text);
+      }
+      throw error;
+    }
+  })().finally(() => { if (preparationJob === job) preparationJob = null; });
+  return job.promise;
+}
+function beginPreparation(id) {
+  // Never hold the command queue while waiting for a page or native UI.
+  setTimeout(() => {
+    if (session?.id !== id || session.messages.length || session.retained) return;
+    prepareHelper(id).catch(error => diagnostic('startup:prepare-failed', { code: stageCode(error.code), stage: stageName(error.stage) }));
+  }, 0);
+}
 async function runRequest(id, requestId) {
   let stage = 'helper_creating';
   try {
-    let tabId;
-    await serial(async () => {
-      if (!session || session.id !== id || session.requestId !== requestId || !C.busy(session.status)) return;
-      session.stage = stage; session.errorCode = ''; diagnostic('helper:stage', { stage });
-      tabId = session.helperTabId;
-      if (!Number.isInteger(tabId)) {
-        const tab = await chrome.tabs.create({ url: HELPER, active: false });
-        tabId = tab.id; session.helperTabId = tabId;
-        await chrome.tabs.update(tabId, { autoDiscardable: false });
-        await publish();
-      }
-    });
-    if (!Number.isInteger(tabId)) return;
-    stage = 'helper_loading'; if (!await helperStage(id, requestId, stage)) return;
-    await waitForLoad(tabId);
-    stage = 'helper_navigation'; if (!await helperStage(id, requestId, stage)) return;
-    const tab = await chrome.tabs.get(tabId);
-    if (!(tab.url || '').startsWith('https://chatgpt.com/')) throw helperError('HELPER_NAVIGATION', stage, 'The helper is not on ChatGPT. Open ChatGPT to inspect sign-in or navigation, then choose Check again. Nothing was sent.');
-    diagnostic('helper:navigation', { onChatGPT: true, complete: tab.status === 'complete' });
-    stage = 'agent_injecting'; if (!await helperStage(id, requestId, stage)) return;
-    await withTimeout(chrome.scripting.executeScript({ target: { tabId }, files: ['lib/core.js', 'lib/selection.js', 'lib/answer.js', 'agent.js'] }), 15000,
-      helperError('HELPER_INJECTION_TIMEOUT', stage, 'The ChatGPT helper page did not accept its tmp.chat adapter in time. Open ChatGPT to inspect it, then choose Check again. Nothing was sent.'));
-    stage = 'agent_ready'; if (!await helperStage(id, requestId, stage)) return;
-    const connection = await withTimeout(chrome.tabs.sendMessage(tabId, { type: 'tmp:probe' }), 5000, helperError('HELPER_HANDSHAKE_TIMEOUT', stage, 'The ChatGPT helper adapter did not answer its readiness check. Open ChatGPT, then choose Check again. Nothing was sent.'));
-    if (!connection?.ok || connection.ready !== true) throw helperError('HELPER_HANDSHAKE', stage, 'The ChatGPT helper loaded, but its tmp.chat adapter did not answer. Open ChatGPT, let it finish loading, then choose Check again. Nothing was sent.');
-    // This checks the adapter connection only. The agent separately waits for ChatGPT's UI.
-    const probe = safeProbe(connection.probe);
-    diagnostic('helper:handshake', { ready: true, probe });
+    if (session?.id !== id || session.requestId !== requestId || !C.busy(session.status)) return;
+    const prepared = await prepareHelper(id);
+    if (!prepared) return;
+    const { tabId, documentId, probe } = prepared;
     stage = 'dispatch';
     let payload;
     await serial(async () => {
@@ -156,7 +208,7 @@ async function runRequest(id, requestId) {
       await publish();
     });
     if (payload) {
-      const response = await withTimeout(chrome.tabs.sendMessage(tabId, payload), 5000,
+      const response = await withTimeout(chrome.tabs.sendMessage(tabId, payload, documentId ? { documentId } : undefined), 5000,
         helperError('HELPER_DISPATCH_TIMEOUT', stage, 'The ChatGPT adapter did not acknowledge your question. Open ChatGPT to inspect whether it was sent, then choose Check again. It will not be sent again automatically.'));
       if (!response?.ok) throw helperError(stageCode(response?.code) || 'HELPER_DISPATCH', stage, response?.error || 'The ChatGPT adapter connection was interrupted while starting your question. Open ChatGPT to inspect whether it was sent, then choose Check again. It will not be sent again automatically.');
       // Stop can arrive after dispatch was recorded but before the agent received run.
@@ -230,8 +282,21 @@ async function handle(message, sender) {
     return { ok: true, preferences: { ...preferences }, state: publicState() };
   }
   if (message.type === 'tmp:ensure') {
-    if (session) requireOwner(tabId);
+    if (session) {
+      requireOwner(tabId);
+      if (message.context && !session.messages.length && !session.context.selection) { session.context = C.context(message.context); await publish(); }
+    }
     else { session = newSession(tabId, message.context); await publish(); }
+    return { ok: true, state: publicState() };
+  }
+  if (message.type === 'tmp:prepare') {
+    if (session) requireOwner(tabId);
+    else session = newSession(tabId);
+    if (!session.messages.length && !session.retained) {
+      session.warmExpiresAt = Date.now() + PREWARM_MS;
+      await chrome.alarms.create('tmp:prewarm', { when: session.warmExpiresAt });
+      await publish(); beginPreparation(session.id);
+    }
     return { ok: true, state: publicState() };
   }
   if (message.type === 'tmp:context') {
@@ -249,13 +314,13 @@ async function handle(message, sender) {
   requireOwner(tabId);
   if (message.type === 'tmp:discard') { await clearSession(); return { ok: true }; }
   if (message.type === 'tmp:focus') {
-    if (!Number.isInteger(session.helperTabId)) throw new Error('The ChatGPT tab opens when you send your first question.');
+    if (!Number.isInteger(session.helperTabId)) throw new Error('The ChatGPT tab is still being prepared.');
     await chrome.tabs.update(session.helperTabId, { active: true });
     return { ok: true };
   }
   if (message.type === 'tmp:keep') {
     if (C.busy(session.status)) throw new Error('Wait for this answer to finish before keeping the conversation.');
-    if (!Number.isInteger(session.helperTabId)) throw new Error('Send a question first.');
+    if (!session.messages.length || !Number.isInteger(session.helperTabId)) throw new Error('Send a question first.');
     // Hand off ownership. This tab must never be closed by later extension cleanup.
     await chrome.tabs.update(session.helperTabId, { autoDiscardable: true, active: true });
     session.retained = true; await persist();
@@ -321,7 +386,9 @@ async function handle(message, sender) {
     if (session.messages.length >= C.LIMITS.turns * 2 || session.messages.reduce((n, m) => n + m.text.length, 0) >= C.LIMITS.sessionChars) throw new Error('This tangent is getting long. Keep it in ChatGPT or start a fresh tangent.');
     const question = C.clip(message.question, C.LIMITS.question);
     if (!question) throw new Error('Write a question first.');
+    session.warmExpiresAt = 0; await chrome.alarms.clear('tmp:prewarm');
     session.requestId = crypto.randomUUID();
+    diagnostic('startup:send', { at: Date.now(), hasHelper: Number.isInteger(session.helperTabId), preparing: preparationJob?.id === session.id });
     session.pendingPrompt = C.buildPrompt(session.context, question, !session.hasSubmitted);
     session.messages.push({ id: crypto.randomUUID(), role: 'user', text: question }, { id: session.requestId, role: 'assistant', text: '', tree: null });
     session.status = 'starting'; session.stage = 'helper_creating'; session.error = ''; session.errorCode = ''; session.probe = null; session.dispatched = false; session.submitted = false; session.stopRequested = false; session.uncertain = false; session.updatedAt = Date.now();
@@ -354,6 +421,10 @@ chrome.tabs.onRemoved.addListener(tabId => serial(async () => {
   if (!session) return;
   if (session.ownerTabId === tabId) await clearSession();
   else if (session.helperTabId === tabId) {
+    if (!session.messages.length && !session.hasSubmitted && !session.dispatched) {
+      session.helperTabId = null; delete session.helperDocumentId; session.warmExpiresAt = 0;
+      await chrome.alarms.clear('tmp:prewarm'); await publish(); return;
+    }
     session.helperTabId = null; session.status = 'error'; session.stage = 'helper_closed'; session.errorCode = 'HELPER_CLOSED';
     session.error = 'The background ChatGPT tab was closed. Copy anything useful, then discard this tangent to start another.'; session.uncertain = !!session.dispatched;
     await chrome.alarms.clear('tmp:watchdog'); await publish();
@@ -369,6 +440,28 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
   }).catch(() => {});
 });
 chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === 'tmp:prewarm') {
+    serial(async () => {
+      if (!session?.warmExpiresAt || Date.now() < session.warmExpiresAt || session.messages.length || session.hasSubmitted || session.dispatched || session.retained || !Number.isInteger(session.helperTabId)) return;
+      const tabId = session.helperTabId;
+      let idle;
+      try {
+        const tab = await chrome.tabs.get(tabId), url = new URL(tab.url);
+        if (!tab.active && !tab.pendingUrl && url.origin === 'https://chatgpt.com' && url.pathname === '/' && url.hash === '#tmp-chat-helper' && url.searchParams.get('temporary-chat') === 'true') {
+          idle = await withTimeout(chrome.tabs.sendMessage(tabId, { type: 'tmp:idle' }, session.helperDocumentId ? { documentId: session.helperDocumentId } : undefined), 5000, helperError('HELPER_IDLE_TIMEOUT', 'agent_ready', 'The empty helper could not be verified.'));
+        }
+      } catch {}
+      // Only the unchanged, empty native helper can be expired automatically.
+      // A user draft, manual native send, or unverifiable document is retained.
+      session.warmExpiresAt = 0;
+      if (idle?.ok && idle.empty === true) {
+        session.helperTabId = null; delete session.helperDocumentId;
+        await publish(); await chrome.tabs.remove(tabId).catch(() => {});
+        diagnostic('startup:expired');
+      } else { await persist(); diagnostic('startup:expiry-retained'); }
+    }).catch(() => {});
+    return;
+  }
   if (alarm.name !== 'tmp:watchdog') return;
   serial(async () => {
     if (!session || !C.busy(session.status)) { await chrome.alarms.clear(alarm.name); return; }

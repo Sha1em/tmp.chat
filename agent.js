@@ -4,7 +4,7 @@
   if (globalThis.__tmpChatAgent) return;
   globalThis.__tmpChatAgent = true;
   const C = TmpCore;
-  let current = null, released = false;
+  let current = null, preparation = null, preparedRoute = null, released = false;
   const diagnostics = globalThis.__tmpChatAgentDiagnostics = [];
   function diagnostic(event, details = {}) {
     // Fixed event names, stages, counts and flags only. Never retain native
@@ -30,7 +30,7 @@
   const assistants = () => globalThis.TmpAnswer?.roots(document) || globalThis.TmpSelection?.assistantRoots(document) || [...document.querySelectorAll('[data-message-author-role="assistant"], [data-testid="assistant-message"], [data-turn="assistant"]')];
   const users = () => globalThis.TmpSelection?.userRoots?.(document) || [...document.querySelectorAll('[data-message-author-role="user"], [data-testid="user-message"], [data-turn="user"]')].filter((element, index, list) => !list.some((parent, other) => index !== other && parent.contains?.(element)));
   function emit(event, run = current) {
-    if (!run || released) return Promise.resolve();
+    if (!run || run.preparing || released) return Promise.resolve();
     if (event.kind !== 'stream' && event.kind !== 'heartbeat') diagnostic('event', { kind: event.kind, attempted: !!run.attempted, cancelled: !!run.cancelled });
     if (event.kind === 'done') event.sequence = run.streamSequence || 0;
     return chrome.runtime.sendMessage({ type: 'tmp:event', sessionId: run.sessionId, requestId: run.requestId, event }).then(reply => {
@@ -94,8 +94,8 @@
       const cancel = () => finish(null, null);
       if (run) (run.waiters ||= new Set()).add(cancel);
       function finish(error, value) { if (finished) return; finished = true; observer.disconnect(); clearTimeout(timer); run?.waiters?.delete(cancel); error ? reject(error) : resolve(value); }
-      function inspect() { try { if (run && (released || current !== run || run.cancelled || run.finished)) { cancel(); return; } const value = check(); if (value) finish(null, value); } catch (e) { finish(e); } }
-      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'readonly', 'aria-disabled', 'aria-hidden', 'aria-pressed', 'contenteditable', 'hidden', 'style', 'class'] });
+      function inspect() { try { if (run && halted(run)) { cancel(); return; } const value = check(); if (value) finish(null, value); } catch (e) { finish(e); } }
+      observer.observe(document.documentElement || document, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'readonly', 'aria-disabled', 'aria-hidden', 'aria-pressed', 'contenteditable', 'hidden', 'style', 'class'] });
       inspect();
     });
   }
@@ -271,7 +271,12 @@
     if (anchors.length) proof.anchors = anchors;
   }
   function verifyContinuation(run) {
-    if (!run.continuation) return;
+    if (!run.continuation) {
+      if (preparedRoute !== null && !run.clicked && (conversationRoute().key !== preparedRoute || users().length || assistants().length)) {
+        throw problem('HELPER_CHANGED', 'temporary_setup', 'The prepared ChatGPT tab changed or already contains messages. Open it to inspect it. Nothing was sent.');
+      }
+      return;
+    }
     run.continuationReason = '';
     const proof = run.conversationProof, route = conversationRoute();
     const reject = reason => {
@@ -334,7 +339,7 @@
     emit({ kind: 'done', text, notices, ...(tree ? { tree } : {}), ...(run.cancelled && !run.clicked ? { cancelledBeforeSend: true, continuation: !!run.continuation } : {}) }, run);
   }
   function halted(run) {
-    return released || current !== run || run.finished || run.cancelled;
+    return released || (run.preparing ? preparation !== run : current !== run) || run.finished || run.cancelled;
   }
   function clearOwnedDraft(run) {
     const box = run.box;
@@ -457,6 +462,40 @@
     run.timeout = setTimeout(() => { if (run.finished || released || current !== run) return; run.finished = true; cleanup(run); emit({ kind: 'error', code: run.lastText ? 'RESPONSE_TIMEOUT' : 'RESPONSE_NOT_FOUND', stage: run.lastText ? 'response_stream' : 'response_wait', text: run.lastText ? 'The ChatGPT answer has not finished. Open its tab to inspect it, then choose Check again to observe the existing answer. Your question will not be resent.' : 'No assistant answer was detected for the existing send attempt. Open ChatGPT to inspect it, then choose Check again to observe the existing attempt. Your question will not be resent.', probe: probe(), attempted: run.attempted }, run); }, 240000);
     inspect();
   }
+  function prepareNative() {
+    if (released) return Promise.resolve({ ok: false, code: 'HELPER_RELEASED', stage: 'agent_ready', error: 'This tab was handed back to you. Start a new tangent.' });
+    if (current) return Promise.resolve({ ok: true, probe: probe() });
+    if (preparation) return preparation.promise;
+    const run = { preparing: true, startedAt: Date.now(), route: conversationRoute().key };
+    preparation = run;
+    run.promise = (async () => {
+      try {
+        // No focus, draft insertion, preference change, or native Send here.
+        await until(() => { const failure = pageProblem('composer_ready'); if (failure) throw failure; return composer(); }, 20000, run);
+        if (halted(run)) return { ok: false, code: 'HELPER_RELEASED', stage: 'agent_ready' };
+        if (users().length || assistants().length) throw problem('HELPER_NOT_EMPTY', 'temporary_setup', 'The prepared ChatGPT tab already contains messages. Open it to inspect it. Nothing was sent.');
+        if (!temporaryConfirmed()) {
+          const toggle = temporaryControl();
+          if (!toggle || toggle.disabled || toggle.getAttribute('aria-disabled') === 'true') throw problem('TEMPORARY_UNVERIFIED', 'temporary_setup', 'Temporary Chat could not be verified. Open the ChatGPT tab, turn on Temporary Chat, then choose Check again. Nothing was sent.');
+          toggle.click();
+          await until(() => { const failure = pageProblem('temporary_setup'); if (failure) throw failure; return temporaryConfirmed(); }, 8000, run,
+            problem('TEMPORARY_UNVERIFIED', 'temporary_setup', 'Temporary Chat could not be verified after opening its setup. Open the ChatGPT tab to finish setup, then choose Check again. Nothing was sent.'));
+        }
+        if (halted(run)) return { ok: false, code: 'HELPER_RELEASED', stage: 'agent_ready' };
+        await until(() => { const failure = pageProblem('composer_ready'); if (failure) throw failure; return composer(); }, 20000, run);
+        if (halted(run)) return { ok: false, code: 'HELPER_RELEASED', stage: 'agent_ready' };
+        const failure = pageProblem('temporary_setup'); if (failure) throw failure;
+        if (!temporaryConfirmed()) throw problem('TEMPORARY_UNVERIFIED', 'temporary_setup', 'Temporary Chat could not be verified. Nothing was sent.');
+        if (conversationRoute().key !== run.route || preparedRoute !== null && preparedRoute !== run.route || users().length || assistants().length || visible(stopButton())) throw problem('HELPER_CHANGED', 'temporary_setup', 'The prepared ChatGPT tab changed or already contains messages. Open it to inspect it. Nothing was sent.');
+        preparedRoute = run.route;
+        diagnostic('startup:native-ready', { at: Date.now(), elapsedMs: Date.now() - run.startedAt, documentState: document.readyState });
+        return { ok: true, probe: probe() };
+      } catch (error) {
+        return { ok: false, code: /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code || '') ? error.code : 'HELPER_PREPARE', stage: error.stage || 'composer_ready', error: error.code ? error.message : 'The ChatGPT helper could not be prepared. Nothing was sent.' };
+      } finally { cleanup(run); if (preparation === run) preparation = null; }
+    })();
+    return run.promise;
+  }
   async function execute(run) {
     try {
       setStage(run, 'composer_ready');
@@ -523,7 +562,7 @@
       if (halted(run)) return;
       verifyContinuation(run);
       watch(run); if (halted(run)) return;
-      run.clicked = true; button.click(); setStage(run, 'send_confirm');
+      run.clicked = true; diagnostic('startup:native-send', { at: Date.now() }); button.click(); setStage(run, 'send_confirm');
       await until(() => users().length > run.baselineUsers || answerNode(run) || visible(stopButton()), 15000, run, problem('SEND_UNCONFIRMED', 'send_confirm', 'The ChatGPT Send control was clicked, but submission could not be confirmed. Open its tab to inspect the existing attempt. Check again only observes it; your question will not be resent.'));
       if (halted(run)) return;
       recordSubmission(run);
@@ -540,9 +579,14 @@
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id || !message?.type?.startsWith('tmp:')) return;
     diagnostic('command', { type: message.type, active: !!current && !current.finished });
-    if (message.type === 'tmp:probe') { respond({ ok: true, ready: !released, probe: probe() }); return; }
+    if (message.type === 'tmp:probe') { respond({ ok: true, protocol: 2, ready: !released, probe: probe() }); return; }
+    if (message.type === 'tmp:prepare') { prepareNative().then(respond); return true; }
+    if (message.type === 'tmp:idle') {
+      respond({ ok: true, empty: !released && !current && !preparation && !!composer() && !(composer().innerText || composer().value || '').trim() && !users().length && !assistants().length && !visible(stopButton()) }); return;
+    }
     if (message.type === 'tmp:run') {
       if (released) { respond({ ok: false, error: 'This tab was handed back to you. Start a new tangent.' }); return; }
+      if (preparation) { respond({ ok: false, code: 'HELPER_PREPARING', error: 'The helper is still being prepared. Nothing was sent.' }); return; }
       if (current?.requestId === message.requestId) {
         respond({ ok: true });
         if (current.finished && !current.attempted && !current.cancelled) { current.finished = false; current.speed = message.speed === 'instant' ? 'instant' : 'current'; execute(current); }
@@ -571,7 +615,7 @@
       respond({ ok: true }); return;
     }
     if (message.type === 'tmp:release') {
-      released = true; if (current) cleanup(current);
+      released = true; if (current) cleanup(current); if (preparation) cleanup(preparation);
       // Remove the helper marker so the tab behaves normally after a reload.
       if (location.hash === '#tmp-chat-helper') history.replaceState(null, '', location.pathname + location.search);
       respond({ ok: true });

@@ -63,7 +63,7 @@ module.exports = async function uiRegressions({ cdp, source, worker, waitFor, de
   const draft = await evaluate(`${panel}.querySelector('#question').value`);
   assert.equal(draft, 'Manual question\nA second line');
   assert.equal(await evaluate(`${panel}.querySelector('.send').disabled`), false);
-  assert.equal((await hello()).state, null, 'Typing must not allocate a tangent or helper');
+  assert.equal((await hello()).state.messages.length, 0, 'Typing must not submit a question into the prepared helper');
   if (await evaluate(`!!${panel}.querySelector('#pasted-context')`)) {
     await click(`${panel}.querySelector('#manual-context summary')`);
     await click(`${panel}.querySelector('#pasted-context')`);
@@ -219,6 +219,6 @@ module.exports = async function uiRegressions({ cdp, source, worker, waitFor, de
   assert.equal((await hello()).state, null);
   assert.equal(await hidden(), true);
   restored(await geometry());
-  assert.equal(await cdp.evaluate('(async()=> (await chrome.tabs.query({})).length)()', worker), baselineTabs, 'UI-only interactions must not create a helper tab');
+  assert.equal(await cdp.evaluate('(async()=> (await chrome.tabs.query({})).length)()', worker), baselineTabs, 'Closing UI-only tangents must clean up prepared helpers');
   console.log('PASS nested/parent-boundary selections, repeated-text context, alternate markers, and user/cross-turn/shadow rejection');
 };

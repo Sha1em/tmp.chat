@@ -157,6 +157,52 @@ function harness(options = {}) {
   return { state, events, stages, diagnostics, get box() { return box; }, initialBox, fallback, document, location: context.location, send, settle, mutate, fire, advance, run, timers, observers, answer, Element, chrome };
 }
 
+test('preparation waits for native readiness without inserting, focusing, sending or changing speed',async()=>{
+  const h=harness({composer:false});
+  const preparation=h.send('prepare');await h.settle();
+  assert.equal(h.state.clicks,0);assert.equal(h.box.draft,'');assert.equal(h.events.length,0);
+  h.state.composer=true;h.mutate();await h.settle();
+  assert.equal((await preparation).ok,true);assert.equal(h.state.clicks,0);assert.equal(h.box.draft,'');
+  assert.equal((await h.send('idle')).empty,true);
+  await h.run();await h.settle();assert.equal(h.state.clicks,1);
+});
+
+test('concurrent prepare commands share readiness and native Temporary activation',async()=>{
+  const h=harness({temporary:false,temporaryChoice:true,activateTemporary:true});
+  const results=await Promise.all([h.send('prepare'),h.send('prepare')]);
+  assert.equal(results.every(r=>r.ok),true);assert.equal(h.state.temporaryClicks,1);assert.equal(h.state.clicks,0);assert.equal(h.box.draft,'');
+});
+
+test('preparation refuses personalization, sign-in and nonempty conversations without sending',async()=>{
+  for(const options of [{temporary:false,temporaryChoice:true,dialog:true},{auth:true,composer:false},{userCount:1}]){
+    const h=harness(options);const result=await h.send('prepare');
+    assert.equal(result.ok,false,JSON.stringify(options));assert.equal(h.state.clicks,0);assert.equal(h.box.draft,'');
+    assert.equal(h.state.choiceClicks,0);assert.equal(h.events.length,0);
+  }
+});
+
+test('native draft prevents idle expiry and stays intact during preparation',async()=>{
+  const h=harness();h.box.draft='USER NATIVE DRAFT';
+  assert.equal((await h.send('prepare')).ok,true);assert.equal((await h.send('idle')).empty,false);
+  assert.equal(h.box.draft,'USER NATIVE DRAFT');assert.equal(h.state.clicks,0);
+});
+
+test('an empty prepared helper cannot silently switch to another conversation before first Send',async()=>{
+  for(const change of ['route','messages']){
+    const h=harness();assert.equal((await h.send('prepare')).ok,true);
+    if(change==='route')h.location.pathname='/c/other-conversation';else h.state.userCount=1;
+    await h.run();await h.settle();assert.equal(h.state.clicks,0,change);assert.equal(h.box.draft,'',change);
+    assert.equal(h.events.find(e=>e.kind==='error').code,'HELPER_CHANGED');
+  }
+});
+
+test('release cancels a pending preparation and later mounts cannot activate or send',async()=>{
+  const h=harness({composer:false});const prepared=h.send('prepare');await h.settle();
+  await h.send('release');await h.settle();h.state.composer=true;h.mutate();await h.settle();
+  assert.equal((await prepared).ok,false);assert.equal(h.state.clicks,0);assert.equal(h.state.temporaryClicks,0);
+  assert.equal(h.observers.size,0);
+});
+
 async function finishFirstAnswer(h) {
   await h.run(); await h.settle();
   h.state.answerText = 'Earlier answer'; h.mutate(); await h.settle();

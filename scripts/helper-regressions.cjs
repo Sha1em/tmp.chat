@@ -39,8 +39,8 @@ module.exports = async function helperRegressions({ cdp, source, worker, session
     await cdp.evaluate(`globalThis.__tmpFixtureMode=''`, worker);
   }
 
-  // Preference-only messages before a session exists return state:null. They
-  // must not erase a question or pasted context, or allocate a helper tab.
+  // Preferences must preserve the draft while deliberate opening prepares
+  // at most one helper. They never submit the question or change native speed.
   assert.equal(await state(), null);
   const pagesBeforePreference = (await cdp.send('Target.getTargets')).targetInfos.filter(info => info.type === 'page').length;
   await cdp.evaluate(`chrome.tabs.sendMessage(${tabId},{type:'tmp:toggle'})`, worker);
@@ -50,18 +50,19 @@ module.exports = async function helperRegressions({ cdp, source, worker, session
     await evaluate(`(()=>{const select=${panel}.querySelector('#speed-preference');select.value=${JSON.stringify(speed)};select.dispatchEvent(new Event('change'));})()`);
     await waitFor(async () => (await hello()).preferences?.speed === speed && await evaluate(`!${panel}.querySelector('#speed-preference').disabled`), `save ${speed} preference without a session`);
     assert.deepEqual(await evaluate(`(()=>{const s=${panel};return {question:s.querySelector('#question').value,context:s.querySelector('#pasted-context').value};})()`), { question: 'Keep this unsent question.', context: 'Keep this optional pasted context.' });
-    assert.equal(await state(), null);
+    assert.equal((await state()).messages.length, 0);
   }
-  assert.equal((await cdp.send('Target.getTargets')).targetInfos.filter(info => info.type === 'page').length, pagesBeforePreference);
+  assert.ok((await cdp.send('Target.getTargets')).targetInfos.filter(info => info.type === 'page').length <= pagesBeforePreference + 1);
   await evaluate(`${panel}.querySelector('#discard').click();${panel}.querySelector('#confirm-discard').click()`);
   await waitFor(() => evaluate(`getComputedStyle(document.getElementById('tmp-chat-root')).display==='none'`), 'close preference draft panel');
-  console.log('PASS pre-session speed preferences preserve unsent question/context, stay browser-local, and create no helper');
+  await waitFor(async () => (await cdp.send('Target.getTargets')).targetInfos.filter(info => info.type === 'page').length === pagesBeforePreference, 'prepared preference helper cleanup');
+  console.log('PASS pre-submit speed preferences preserve question/context and reuse the one prepared helper');
 
   // The document has finished loading, but the SPA has not mounted its editor.
   // The adapter must acknowledge its listener before that editor exists.
   let helper = await submit('loading-manual');
   let snapshot = await waitFor(async () => { const value = await state(); return value?.stage === 'composer_ready' ? value : false; }, 'adapter ready before SPA composer');
-  assert.equal(snapshot.status, 'sending'); assert.equal(snapshot.errorCode, '');
+  assert.equal(snapshot.status, 'starting'); assert.equal(snapshot.errorCode, '');
   assert.equal(snapshot.probe.composerCount, 0); assert.equal(snapshot.probe.hasComposer, false);
   assert.deepEqual(await cdp.evaluate(`({mounts:window.__fixture.mounts,clicks:window.__fixture.sendButtonClicks,sends:window.__sends})`, helper.sessionId), { mounts: 0, clicks: 0, sends: 0 });
   await cdp.evaluate('window.__mountComposer()', helper.sessionId);

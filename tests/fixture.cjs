@@ -39,7 +39,7 @@ module.exports = function fixture(helper = false, variant = false) {
       if(button.disabled)return;
       window.__fixture.sendButtonClicks++;
       if(fixtureMode==='no-ack')return;
-      const prompt=read().trim();window.__sends++;window.__prompts.push(prompt);write('');
+      const prompt=read().trim();window.__fixture.nativeSentAt=Date.now();window.__sends++;window.__prompts.push(prompt);write('');
       const turns=document.getElementById('turns');let answer,body;
       if(isDil){
         // Reproduce the observed DIL structure: the shared turn contains both

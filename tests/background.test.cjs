@@ -10,23 +10,23 @@ function event() { const listeners = new Set(); return {addListener:fn=>listener
 function harness(saved = null) {
   const data = saved ? {'tmp.chat.session':structuredClone(saved)} : {};
   const tabs = new Map([[1,{id:1,url:'https://chatgpt.com/c/source',status:'complete'}],[9,{id:9,url:'https://chatgpt.com/c/other',status:'complete'}]]);
-  const calls = [], removed = [], updates = [], diagnostics = []; let nextId=2;
+  const calls = [], removed = [], updates = [], diagnostics = []; let nextId=2, now=Date.now();
   const runtimeMessage=event(), onRemoved=event(), onUpdated=event(), onAlarm=event();
   const chrome = {
     runtime:{id:'test-extension',onMessage:runtimeMessage},
     storage:{session:{get:async key=>({[key]:data[key]}),set:async values=>Object.assign(data,structuredClone(values)),remove:async key=>{delete data[key];}},local:{get:async key=>({[key]:data[key]}),set:async values=>Object.assign(data,structuredClone(values))}},
-    tabs:{onRemoved,onUpdated,get:async id=>{if(!tabs.has(id))throw Error('No tab');return {...tabs.get(id)};},create:async props=>{const tab={id:nextId++,status:'complete',...props};tabs.set(tab.id,tab);calls.push({type:'create',...props});return tab;},update:async(id,props)=>{if(!tabs.has(id))throw Error('No tab');Object.assign(tabs.get(id),props);updates.push({id,...props});return tabs.get(id);},remove:async id=>{removed.push(id);tabs.delete(id);onRemoved.emit(id,{});},sendMessage:async(id,message)=>{calls.push({type:'message',id,message:structuredClone(message)});return message.type==='tmp:probe'?{ok:true,ready:true,probe:{documentState:'complete',hasComposer:true}}:{ok:true};}},
-    scripting:{executeScript:async props=>{calls.push({type:'inject',...props});return[];}},
+    tabs:{onRemoved,onUpdated,get:async id=>{if(!tabs.has(id))throw Error('No tab');return {...tabs.get(id)};},create:async props=>{const tab={id:nextId++,status:'complete',...props};tabs.set(tab.id,tab);calls.push({type:'create',...props});return tab;},update:async(id,props)=>{if(!tabs.has(id))throw Error('No tab');Object.assign(tabs.get(id),props);updates.push({id,...props});return tabs.get(id);},remove:async id=>{removed.push(id);tabs.delete(id);onRemoved.emit(id,{});},sendMessage:async(id,message,options)=>{calls.push({type:'message',id,message:structuredClone(message),options});return message.type==='tmp:probe'?{ok:true,protocol:2,ready:true,probe:{documentState:'complete',hasComposer:true}}:{ok:true};}},
+    scripting:{executeScript:async props=>{calls.push({type:'inject',...props});return[{documentId:'document-'+props.target.tabId}];}},
     alarms:{create:async()=>{},clear:async()=>true,onAlarm},action:{onClicked:event()}
   };
   const timers=new Set(), timerDetails=new Map();
-  const context=vm.createContext({chrome,crypto:webcrypto,URL,console:{...console,debug:(...args)=>diagnostics.push(args)},setTimeout:(fn,delay)=>{const timer=setTimeout(()=>{timers.delete(timer);timerDetails.delete(timer);fn();},delay);timers.add(timer);timerDetails.set(timer,{fn,delay});return timer;},clearTimeout:timer=>{timers.delete(timer);timerDetails.delete(timer);clearTimeout(timer);}});
+  const context=vm.createContext({chrome,crypto:webcrypto,URL,Date:class extends Date {static now(){return now;}},console:{...console,debug:(...args)=>diagnostics.push(args)},setTimeout:(fn,delay)=>{const timer=setTimeout(()=>{timers.delete(timer);timerDetails.delete(timer);fn();},delay);timers.add(timer);timerDetails.set(timer,{fn,delay});return timer;},clearTimeout:timer=>{timers.delete(timer);timerDetails.delete(timer);clearTimeout(timer);}});
   context.importScripts=file=>vm.runInContext(fs.readFileSync(path.join(root,file),'utf8'),context);
   vm.runInContext(fs.readFileSync(path.join(root,'background.js'),'utf8'),context);
   function send(type,payload={},id=1) { return new Promise(resolve=>runtimeMessage.emit({type:`tmp:${type}`,...payload},{id:'test-extension',tab:tabs.get(id)||{id}},resolve)); }
   const settle=()=>new Promise(resolve=>setTimeout(resolve,25));
   const fireTimeout=delay=>{for(const[timer,detail]of[...timerDetails])if(detail.delay===delay){clearTimeout(timer);timers.delete(timer);timerDetails.delete(timer);detail.fn();}};
-  return {send,settle,fireTimeout,calls,removed,updates,diagnostics,tabs,data,chrome,close:()=>{for(const timer of timers)clearTimeout(timer);}};
+  return {send,settle,fireTimeout,calls,removed,updates,diagnostics,tabs,data,chrome,advance:ms=>{now+=ms;},close:()=>{for(const timer of timers)clearTimeout(timer);}};
 }
 test('progress stages do not wait on storage before first text, but submitted remains durable', async t => {
   const h = harness(); t.after(h.close);
@@ -78,6 +78,125 @@ test('worker restart repairs an uncheckpointed stream gap from existing output w
   assert.equal(restarted.calls.some(call => call.message?.type === 'tmp:run' || call.type === 'create'), false);
 });
 
+test('deliberate opening prepares one inactive empty helper without dispatch or context', async t => {
+  const h=harness();t.after(h.close);
+  await h.send('context',{context:{selection:'PRIVATE SELECTED PASSAGE'}});
+  assert.equal(h.calls.some(c=>c.type==='create'),false);
+  await Promise.all([h.send('prepare'),h.send('prepare')]);await h.settle();
+  assert.equal(h.calls.filter(c=>c.type==='create').length,1);
+  assert.equal(h.calls.find(c=>c.type==='create').active,false);
+  assert.equal(h.calls.some(c=>c.message?.type==='tmp:run'),false);
+  assert.ok(h.calls.some(c=>c.message?.type==='tmp:prepare'));
+  assert.equal(h.calls.filter(c=>c.id===2).some(c=>JSON.stringify(c.message).includes('PRIVATE SELECTED PASSAGE')),false);
+  assert.equal((await h.send('hello')).state.status,'idle');
+  assert.equal(JSON.stringify(h.diagnostics).includes('PRIVATE SELECTED PASSAGE'),false);
+});
+
+test('immediate Send joins pending preparation, binds the document, and submits once', async t=>{
+  const h=harness();t.after(h.close);let release;
+  const nativeSend=h.chrome.tabs.sendMessage;
+  h.chrome.tabs.sendMessage=async(id,message,options)=>{const result=await nativeSend(id,message,options);if(message.type==='tmp:prepare')return new Promise(resolve=>{release=()=>resolve(result);});return result;};
+  await h.send('prepare');await h.settle();
+  await h.send('send',{question:'one question'});await h.settle();
+  assert.equal(h.calls.some(c=>c.message?.type==='tmp:run'),false);
+  release();await h.settle();
+  assert.equal(h.calls.filter(c=>c.type==='create').length,1);
+  assert.equal(h.calls.filter(c=>c.type==='inject').length,1);
+  const runs=h.calls.filter(c=>c.message?.type==='tmp:run');assert.equal(runs.length,1);
+  assert.equal(runs[0].options.documentId,'document-2');
+});
+
+test('committed loading document can submit before full load, but pending foreign navigation cannot',async t=>{
+  const h=harness();t.after(h.close);const create=h.chrome.tabs.create;
+  h.chrome.tabs.create=async props=>{const tab=await create(props);tab.status='loading';return tab;};
+  await h.send('ensure');await h.send('send',{question:'early'});await h.settle();
+  assert.equal(h.calls.filter(c=>c.message?.type==='tmp:run').length,1);
+  assert.equal(h.calls.find(c=>c.type==='inject').injectImmediately,true);
+  const blocked=harness();t.after(blocked.close);const otherCreate=blocked.chrome.tabs.create;
+  blocked.chrome.tabs.create=async props=>{const tab=await otherCreate(props);tab.pendingUrl='https://example.org/';tab.status='loading';return tab;};
+  await blocked.send('ensure');await blocked.send('send',{question:'blocked'});await blocked.settle();
+  assert.equal(blocked.calls.some(c=>c.type==='inject'),false);
+});
+
+test('warm submission and follow-up reuse the injected adapter without routine reinjection',async t=>{
+  const h=harness();t.after(h.close);await h.send('prepare');await h.settle();
+  await h.send('send',{question:'first'});await h.settle();
+  const run=h.calls.find(c=>c.message?.type==='tmp:run');
+  await h.send('event',{sessionId:run.message.sessionId,requestId:run.message.requestId,event:{kind:'submitted'}},run.id);
+  await h.send('event',{sessionId:run.message.sessionId,requestId:run.message.requestId,event:{kind:'done',text:'answer'}},run.id);
+  await h.send('send',{question:'follow-up'});await h.settle();
+  assert.equal(h.calls.filter(c=>c.type==='inject').length,1);
+  assert.equal(h.calls.filter(c=>c.type==='create').length,1);
+  assert.equal(h.calls.filter(c=>c.message?.type==='tmp:run').at(-1).message.continuation,true);
+});
+
+test('discard or Stop during preparation cannot dispatch a delayed question',async t=>{
+  for(const action of ['discard','stop']){
+    const h=harness();t.after(h.close);let release;const send=h.chrome.tabs.sendMessage;
+    h.chrome.tabs.sendMessage=async(id,msg,options)=>{const result=await send(id,msg,options);return msg.type==='tmp:prepare'?new Promise(resolve=>{release=()=>resolve(result);}):result;};
+    await h.send('prepare');await h.settle();await h.send('send',{question:'cancel'});await h.settle();
+    await h.send(action);release();await h.settle();
+    assert.equal(h.calls.some(c=>c.message?.type==='tmp:run'),false,action);
+  }
+});
+
+test('idle expiration closes only a verified empty unsent helper and leaves context intact',async t=>{
+  const h=harness();t.after(h.close);await h.send('context',{context:{selection:'preserved'}});await h.send('prepare');await h.settle();
+  const send=h.chrome.tabs.sendMessage;h.chrome.tabs.sendMessage=async(id,msg,options)=>msg.type==='tmp:idle'?{ok:true,empty:true}:send(id,msg,options);
+  h.advance(180001);h.chrome.alarms.onAlarm.emit({name:'tmp:prewarm'});await h.settle();
+  assert.deepEqual(h.removed,[2]);let state=(await h.send('hello')).state;assert.equal(state.hasHelper,false);assert.equal(state.context.selection,'preserved');assert.equal(state.status,'idle');
+  await h.send('send',{question:'later'});await h.settle();assert.equal(h.calls.filter(c=>c.type==='create').length,2);
+});
+
+test('closing immediately cleans up an owned helper before its initial navigation commits',async t=>{
+  const h=harness();t.after(h.close);const create=h.chrome.tabs.create;
+  h.chrome.tabs.create=async props=>{const tab=await create(props);Object.assign(tab,{url:'about:blank',pendingUrl:props.url,status:'loading'});return tab;};
+  await h.send('prepare');await h.settle();await h.send('discard');await h.settle();
+  assert.deepEqual(h.removed,[2]);assert.equal((await h.send('hello')).state,null);
+  assert.equal(h.calls.some(c=>c.message?.type==='tmp:run'),false);
+});
+
+test('expiration retains native drafts, active requests, focused helpers, moved pages and completed conversations',async t=>{
+  for(const kind of ['draft','active','completed','focused','moved']){
+    const h=harness();t.after(h.close);await h.send('prepare');await h.settle();
+    if(kind==='focused')h.tabs.get(2).active=true;
+    if(kind==='moved')h.tabs.get(2).url='https://chatgpt.com/c/some-other-chat';
+    if(['active','completed'].includes(kind)){
+      await h.send('send',{question:'first'});await h.settle();
+      if(kind==='completed'){const run=h.calls.find(c=>c.message?.type==='tmp:run');await h.send('event',{sessionId:run.message.sessionId,requestId:run.message.requestId,event:{kind:'done',text:'complete'}},run.id);}
+    }
+    h.advance(180001);h.chrome.alarms.onAlarm.emit({name:'tmp:prewarm'});await h.settle();assert.deepEqual(h.removed,[],kind);
+  }
+});
+
+test('preparation ownership, retry and unexpected unsent helper closure preserve manual fallback',async t=>{
+  const h=harness();t.after(h.close);await h.send('prepare');await h.settle();
+  assert.equal((await h.send('prepare',{},9)).ok,false);
+  await h.chrome.tabs.remove(2);await h.settle();assert.equal((await h.send('hello')).state.status,'idle');
+  await h.send('ensure',{context:{selection:'pasted after opening'}});
+  await h.send('send',{question:'manual question'});await h.settle();
+  const run=h.calls.find(c=>c.message?.type==='tmp:run');assert.ok(run.message.prompt.includes('pasted after opening'));
+});
+
+test('worker restart reuses a prepared document and the same idle-expiry deadline',async t=>{
+  const first=harness();t.after(first.close);await first.send('prepare');await first.settle();
+  const saved=first.data['tmp.chat.session'];assert.equal(saved.helperDocumentId,'document-2');assert.ok(saved.warmExpiresAt);
+  const restarted=harness(saved);t.after(restarted.close);restarted.tabs.set(2,{...first.tabs.get(2)});
+  await restarted.send('ensure',{context:{selection:'context after restart'}});await restarted.send('send',{question:'resume readiness'});await restarted.settle();
+  assert.equal(restarted.calls.some(c=>c.type==='create'||c.type==='inject'),false);
+  assert.equal(restarted.calls.filter(c=>c.message?.type==='tmp:run').length,1);
+});
+
+test('native preparation errors stay pre-dispatch and explicit Check can retry setup once',async t=>{
+  const h=harness();t.after(h.close);let blocked=true;const send=h.chrome.tabs.sendMessage;
+  h.chrome.tabs.sendMessage=async(id,msg,options)=>{const result=await send(id,msg,options);return msg.type==='tmp:prepare'&&blocked?{ok:false,code:'SIGN_IN_REQUIRED',stage:'composer_ready',error:'Sign in. Nothing was sent.'}:result;};
+  await h.send('prepare');await h.settle();await h.send('send',{question:'wait for login'});await h.settle();
+  const state=(await h.send('hello')).state;assert.equal(state.errorCode,'SIGN_IN_REQUIRED');assert.equal(state.uncertain,false);
+  assert.equal(h.calls.some(c=>c.message?.type==='tmp:run'),false);
+  blocked=false;await h.send('check');await h.settle();
+  assert.equal(h.calls.filter(c=>c.message?.type==='tmp:run').length,1);assert.equal(h.calls.filter(c=>c.type==='create').length,1);
+});
+
 test('lazy startup, one helper, incremental answers, and bounded follow-ups', async t=>{
   const h=harness();t.after(h.close);
   let result=await h.send('context',{context:{selection:'a passage',nearby:'some context'}});assert.equal(result.ok,true);assert.equal(h.calls.filter(c=>c.type==='create').length,0);
@@ -99,7 +218,7 @@ test('dispatch waits for navigation, script injection, and a listener-ready hand
   assert.equal(h.calls.filter(c=>c.type==='inject').length,0);assert.equal((await h.send('hello')).state.stage,'helper_loading');
   helper.url=helper.pendingUrl;delete helper.pendingUrl;h.chrome.tabs.onUpdated.emit(helper.id,{url:helper.url,status:'complete'});await h.settle();
   const injection=h.calls.find(c=>c.type==='inject');assert.deepEqual(Array.from(injection.files),['lib/core.js','lib/selection.js','lib/answer.js','agent.js']);assert.equal(h.calls.filter(c=>c.message?.type==='tmp:run').length,0);assert.equal(h.data['tmp.chat.session'].dispatched,false);
-  acknowledge({ok:true,ready:true,probe:{documentState:'complete',composerCount:0,temporary:false,authGate:false,privateText:'private question'}});await h.settle();
+  acknowledge({ok:true,protocol:2,ready:true,probe:{documentState:'complete',composerCount:0,temporary:false,authGate:false,privateText:'private question'}});await h.settle();
   assert.equal(h.calls.filter(c=>c.message?.type==='tmp:run').length,1,'listener readiness must not require the SPA composer yet');assert.equal((await h.send('hello')).state.stage,'dispatch');
   const logs=JSON.stringify(h.diagnostics);assert.equal(logs.includes('private question'),false);assert.equal(logs.includes('privateText'),false);
 });
@@ -115,7 +234,7 @@ test('failed helper handshake is a retryable pre-dispatch failure and reuses one
 
 test('helper load and handshake deadlines report distinct pre-send failure codes', async t=>{
   const loading=harness();t.after(loading.close);const create=loading.chrome.tabs.create;
-  loading.chrome.tabs.create=async props=>{const tab=await create(props);tab.status='loading';return tab;};
+  loading.chrome.tabs.create=async props=>{const tab=await create(props);Object.assign(tab,{url:'about:blank',pendingUrl:props.url,status:'loading'});return tab;};
   await loading.send('ensure');await loading.send('send',{question:'why'});await loading.settle();loading.fireTimeout(25000);await loading.settle();
   let snapshot=await loading.send('hello');assert.equal(snapshot.state.errorCode,'HELPER_LOAD_TIMEOUT');assert.equal(snapshot.state.uncertain,false);assert.equal(loading.calls.filter(c=>c.type==='inject').length,0);
   const connecting=harness();t.after(connecting.close);const sendMessage=connecting.chrome.tabs.sendMessage;
@@ -271,7 +390,7 @@ test('platform errors are not copied into worker diagnostics', async t=>{
 
 test('closed helper diagnostics preserve whether a send could have happened', async t=>{
   const waiting=harness();t.after(waiting.close);const create=waiting.chrome.tabs.create;
-  waiting.chrome.tabs.create=async props=>{const tab=await create(props);tab.status='loading';return tab;};
+  waiting.chrome.tabs.create=async props=>{const tab=await create(props);Object.assign(tab,{url:'about:blank',pendingUrl:props.url,status:'loading'});return tab;};
   await waiting.send('ensure');await waiting.send('send',{question:'why'});await waiting.settle();const helper=waiting.calls.find(c=>c.type==='create');
   assert.ok(helper);waiting.chrome.tabs.onRemoved.emit(2,{});await waiting.settle();let snapshot=await waiting.send('hello');assert.equal(snapshot.state.errorCode,'HELPER_CLOSED');assert.equal(snapshot.state.uncertain,false);assert.equal(waiting.calls.filter(c=>c.message?.type==='tmp:run').length,0);
   const dispatched=harness();t.after(dispatched.close);await dispatched.send('ensure');await dispatched.send('send',{question:'why'});await dispatched.settle();const run=dispatched.calls.find(c=>c.message?.type==='tmp:run');

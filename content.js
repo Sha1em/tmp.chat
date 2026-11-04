@@ -108,7 +108,15 @@
   } });
   function place() { if (opened) layout.place({ minimized, anchorTop: selectionRect?.top }); }
   function scheduleLayout() { if (opened) layout.schedule(); }
-  function open() { visibilityRevision++; opened = true; minimized = false; render(); place(); if (!compact) textarea.focus({ preventScroll: true }); }
+  let openingPreparation = null;
+  function prepareOnOpen() {
+    if (occupied || state?.messages.length || openingPreparation) return;
+    const revision = stateRevision;
+    openingPreparation = rpc('prepare').then(result => {
+      if (revision === stateRevision) applyState(result.state);
+    }).catch(() => { /* Submission reports setup errors through existing controls. */ }).finally(() => { openingPreparation = null; });
+  }
+  function open(prepare = true) { visibilityRevision++; opened = true; minimized = false; render(); place(); if (!compact) textarea.focus({ preventScroll: true }); if (prepare) prepareOnOpen(); }
   async function reopen() {
     const intent = ++visibilityRevision, revision = stateRevision;
     try {
@@ -216,8 +224,8 @@
     $('#failure-stage').textContent = code ? `${stageLabels[state.stage]?.replace(/…$/, '') || 'ChatGPT connection'} · ${code}` : '';
     $('#focus-helper').hidden = !state?.hasHelper;
     $('#check').hidden = !state?.pendingPrompt || (!state?.hasHelper && !!state?.uncertain);
-    $('#keep').disabled = !state?.hasHelper || C.busy(state?.status);
-    $('#keep').title = !state?.hasHelper ? 'Send a question before opening this tangent in ChatGPT' : C.busy(state?.status) ? 'Wait for the answer to finish before keeping it' : 'Open in ChatGPT to save or continue';
+    $('#keep').disabled = !state?.hasHelper || !list.length || C.busy(state?.status);
+    $('#keep').title = !state?.hasHelper || !list.length ? 'Send a question before opening this tangent in ChatGPT' : C.busy(state?.status) ? 'Wait for the answer to finish before keeping it' : 'Open in ChatGPT to save or continue';
     $('#copy').disabled = !list.some(m => m.text);
     $('#copy').title = $('#copy').disabled ? 'Send a question before copying the conversation' : 'Copy conversation';
     $('#discard').disabled = false;
@@ -314,7 +322,7 @@
     // Lock immediately, before waiting for the service worker, to prevent double clicks.
     const previous = textarea.value; textarea.value = ''; submitting = true; updateComposer();
     try {
-      if (!state) {
+      if (!state || !state.messages.length && !state.context.selection) {
         const pasted = pastedContext.value.trim();
         const result = await rpc('ensure', { context: { selection: pasted.slice(0, C.LIMITS.selection), nearby: pasted.slice(C.LIMITS.selection, C.LIMITS.selection + C.LIMITS.nearby) } });
         stateRevision++; state = result.state;
@@ -346,10 +354,10 @@
   });
   $('#cancel-discard').addEventListener('click', () => { $('#confirm').hidden = true; });
   $('#confirm-discard').addEventListener('click', discard);
-  async function discard() { try { if (state) await rpc('discard'); applyState(null); hide(); } catch (e) { toast(e.message); } }
+  async function discard() { try { if (openingPreparation) await openingPreparation; if (state) await rpc('discard'); applyState(null); hide(); } catch (e) { toast(e.message); } }
   $('#copy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(C.transcript(state.messages)); toast('Conversation copied.'); } catch { toast('Your browser could not copy this conversation.'); } });
   $('#keep').addEventListener('click', async () => {
-    try { await rpc('keep'); applyState(null); render(); open(); toast('The chat is yours now. Choose Save chat in ChatGPT to keep it in your history.'); }
+    try { await rpc('keep'); applyState(null); render(); open(false); toast('The chat is yours now. Choose Save chat in ChatGPT to keep it in your history.'); }
     catch (e) { toast(e.message); }
   });
   $('#focus-helper').addEventListener('click', async () => { try { await rpc('focus'); } catch (e) { toast(e.message); } });
