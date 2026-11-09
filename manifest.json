@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "tmp.chat",
-  "version": "0.1.7",
+  "version": "0.1.9",
   "description": "Explore a tangent beside your ChatGPT conversation, using your own ChatGPT account.",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "scripting", "alarms"],

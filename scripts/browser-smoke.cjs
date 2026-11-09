@@ -77,6 +77,11 @@ const debug=process.argv.includes('--debug');
     await require('./helper-regressions.cjs')({ cdp, source, worker, sessions, waitFor, delay });
     assert.deepEqual(errors.filter(e => !e.includes('net::ERR')), []); return;
   }
+  if (process.argv.includes('--submission-only')) {
+    await require('./submission-regressions.cjs')({ cdp, source, worker, sessions, waitFor, delay });
+    assert.deepEqual(errors.filter(e => !e.includes('net::ERR')), []); return;
+  }
+  await require('./submission-regressions.cjs')({ cdp, source, worker, sessions, waitFor, delay });
   await require('./streaming-regressions.cjs')({ cdp, source, worker, sessions, waitFor, delay });
   if (process.argv.includes('--streaming-only')) { assert.deepEqual(errors.filter(e => !e.includes('net::ERR')), []); return; }
   await require('./ui-regressions.cjs')({ cdp, source, worker, waitFor, delay });

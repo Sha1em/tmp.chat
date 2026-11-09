@@ -4,7 +4,7 @@ Explore the tangent. Keep the thread.
 
 A small Chrome/Edge extension that opens a contextual side conversation in the unused space beside a ChatGPT answer. It uses one dedicated, inactive ChatGPT tab and mirrors its answer into a custom panel.
 
-**Version 0.1.7 prepares the helper when you deliberately open tmp.chat(), while you read and type.** Startup uses a committed ChatGPT document and native readiness checks rather than waiting for every page resource to finish loading. Preparation inserts no context or question and never clicks Send. The v0.1.6 conversation-identity fix, streaming, formatting and visual design are preserved. Automated browser tests use offline fixtures and do not establish live compatibility or live-service speed. This is website automation, not an official OpenAI integration. The previous working source is preserved at Git tag **stable-v0.1.6**; see [CHECKPOINT.md](CHECKPOINT.md).
+**Version 0.1.9 targets helper readiness and native submission delays.** It detects in-place composer/control hydration and revalidates the live editor, owned draft and Send button after saving the submission checkpoint. The v0.1.7 streaming, completion, formatting and visual design are retained. Automated browser tests use offline fixtures and do not establish a live speed improvement or signed-in compatibility. This is website automation, not an official OpenAI integration. The previous working source is preserved at **checkpoint-v0.1.7**, with **stable-v0.1.6** also intact; see [CHECKPOINT.md](CHECKPOINT.md) and [SUBMISSION-v0.1.9.md](SUBMISSION-v0.1.9.md).
 
 ## Install locally
 

@@ -258,6 +258,11 @@ async function handle(message, sender) {
       }
     }
     if (event.kind === 'error') {
+      // The adapter can positively report a failure before its only native
+      // click, including a remount during the durable attempt checkpoint.
+      if (event.attempted === false && event.cancelledBeforeSend === true) {
+        session.hasSubmitted = !!event.continuation; session.submitted = false;
+      }
       session.status = 'error'; session.error = C.clip(event.text, 500); session.uncertain = event.attempted !== false;
       session.errorCode = stageCode(event.code) || 'AGENT_ERROR';
       diagnostic('agent:failed', { code: session.errorCode, stage: session.stage, attempted: event.attempted !== false });

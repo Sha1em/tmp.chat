@@ -24,7 +24,7 @@ function harness(options = {}) {
     setAttribute(name, value) { this.attributes[name] = String(value); }
     hasAttribute(name) { return name in this.attributes; }
     append(...nodes) { for (const node of nodes) { node.parentElement = this; this.childNodes.push(node); } }
-    contains(node) { return node === this || this.childNodes.some(child => child.contains?.(node)); }
+    contains(node) { return node === this || this.childNodes.some(child => child === node || child.contains?.(node)); }
     closest(selector) {
       if (/^\[data-/.test(selector)) { for (let node = this; node; node = node.parentElement) if (node.matches(selector)) return node; return null; }
       return selector.startsWith('form,') && state.effortControl ? effortScope : selector.includes('dialog') && state.dialog ? dialog : null;
@@ -44,7 +44,7 @@ function harness(options = {}) {
     }
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     dispatchEvent() {}
-    focus() { activeElement = this; }
+    focus() { activeElement = this; state.focuses = (state.focuses || 0) + 1; }
     click() {}
   }
   class TextArea extends Element {
@@ -60,14 +60,22 @@ function harness(options = {}) {
   Object.defineProperty(answer, 'innerText', { get: () => state.answerText || '' });
   const marker = new Element('H1', { 'data-testid': 'temporary-chat-header' }, 'Temporary Chat');
   const saveChatButton = new Element('BUTTON', { 'aria-label': 'Save chat' }, 'Save chat');
-  const sendButton = new Element('BUTTON', state.simpleSendLabel ? { 'aria-label': 'Send' } : { 'data-testid': 'send-button', 'aria-label': 'Send prompt' }, 'Send');
-  Object.defineProperty(sendButton, 'disabled', { get: () => !state.sendEnabled });
-  sendButton.click = () => { state.clicks++; state.sentDraft = box.draft; if (state.acknowledgeSend) { state.userCount++; state.stop = state.startStreaming; box.draft = ''; } };
+  const makeSendButton = () => {
+    const button = new Element('BUTTON', state.simpleSendLabel ? { 'aria-label': 'Send' } : { 'data-testid': 'send-button', 'aria-label': 'Send prompt' }, 'Send');
+    Object.defineProperty(button, 'disabled', { get: () => !state.sendEnabled });
+    button.click = () => {
+      if (!button.isConnected) { state.detachedSendClicks = (state.detachedSendClicks || 0) + 1; return; }
+      state.clicks++; state.sentDraft = box.draft;
+      if (state.acknowledgeSend) { state.userCount++; state.stop = state.startStreaming; box.draft = ''; }
+    };
+    return button;
+  };
+  let sendButton = makeSendButton(); const initialSendButton = sendButton;
   const stopButton = new Element('BUTTON', { 'data-testid': 'stop-button', 'aria-label': 'Stop generating' });
   stopButton.click = () => { state.stops++; state.stop = false; };
   const temporaryButton = new Element('BUTTON', { 'data-testid': 'temporary-chat-button' }, 'Temporary');
   temporaryButton.getAttribute = name => name === 'aria-label' ? state.temporary ? 'Turn off temporary chat' : 'Turn on temporary chat' : name === 'aria-pressed' ? String(state.temporary) : temporaryButton.attributes[name] ?? null;
-  temporaryButton.click = () => { state.temporaryClicks++; state.temporary = true; if (state.remountOnTemporary) { box.isConnected = false; box = makeBox(); } };
+  temporaryButton.click = () => { state.temporaryClicks++; if (!state.deferTemporaryActivation) state.temporary = true; if (state.remountOnTemporary) { box.isConnected = false; box = makeBox(); } };
   const dialog = new Element('DIV', { role: 'dialog', 'aria-modal': 'true' }, 'Start a Temporary Chat. Choose Personalized or Unpersonalized.');
   const choices = ['Personalized', 'Unpersonalized'].map(text => { const choice = new Element('BUTTON', {}, text); choice.click = () => { state.choiceClicks++; state.dialog = false; }; return choice; });
   const login = new Element('BUTTON', {}, 'Log in');
@@ -126,20 +134,55 @@ function harness(options = {}) {
     createRange: () => ({ selectNodeContents() {}, collapse() {} }),
     execCommand(command, ui, value) { if (!activeElement) return false; activeElement.draft = command === 'delete' ? '' : value; return true; }
   };
+  document.documentElement.append(main);
+  main.append(box, marker, sendButton, stopButton, temporaryButton);
   class MutationObserver {
     constructor(callback) { this.callback = callback; }
     observe(target, options) { this.target = target; this.options = options; observers.add(this); }
     disconnect() { observers.delete(this); }
   }
   const setTimer = (callback, delay, interval = false) => { const id = nextTimer++; timers.set(id, { callback, delay, due: now + delay, interval }); return id; };
-  const chrome = { runtime: { id: 'test-extension', onMessage: { addListener(fn) { listener = fn; } }, async sendMessage(message) { if (!message.event) return { ok: true }; (message.event.kind === 'stage' ? stages : events).push(structuredClone(message.event)); if (message.event.kind === 'submitted' && state.acknowledge) await state.acknowledge; return { ok: true }; } } };
+  const chrome = { runtime: { id: 'test-extension', onMessage: { addListener(fn) { listener = fn; } }, async sendMessage(message) {
+    if (!message.event) return { ok: true };
+    (message.event.kind === 'stage' ? stages : events).push(structuredClone(message.event));
+    if (message.event.kind === 'submitted') {
+      if (state.acknowledge) await state.acknowledge;
+      if (state.submittedThrows) throw new Error('PRIVATE TRANSPORT DETAIL');
+      if (Object.hasOwn(state, 'submittedReply')) return state.submittedReply;
+    }
+    return { ok: true };
+  } } };
   const context = vm.createContext({ TmpCore: core, URLSearchParams, Date: class extends Date { static now() { return now; } }, performance: { now: () => now }, chrome, document, MutationObserver, HTMLElement: Element, HTMLTextAreaElement: TextArea, Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 }, Event: class Event {}, InputEvent: class InputEvent {}, getSelection: () => ({ removeAllRanges() {}, addRange() {} }), getComputedStyle: element => ({ visibility: 'visible', display: element?.hidden ? 'none' : 'block' }), location: { pathname: '/', search: '?temporary-chat=true', hash: '#tmp-chat-helper' }, history: { replaceState() {} }, console: { debug: (...args) => diagnostics.push(args) }, setTimeout: (fn, delay) => setTimer(fn, delay), clearTimeout: id => timers.delete(id), setInterval: (fn, delay) => setTimer(fn, delay, true), clearInterval: id => timers.delete(id) });
   if (state.identities || state.realIdentities) context.TmpAnswer = { roots: () => state.answerRoots || [], identity: state.realIdentities ? answerAdapter.identity : node => node.getAttribute('data-message-id') || '', snapshot: node => ({ text: node.innerText, tree: [] }) };
   if (state.sharedRoots) context.TmpSelection = { assistantRoots: () => state.answerText === undefined ? [] : [answer], userRoots: nativeUsers };
   vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../agent.js'), 'utf8'), context);
   const send = (type, payload = {}) => new Promise(resolve => listener({ type: `tmp:${type}`, ...payload }, { id: chrome.runtime.id }, resolve));
   const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
-  const mutate = () => { for (const observer of [...observers]) observer.callback(); };
+  // Legacy tests explicitly request a broad wake-up. New readiness regressions
+  // supply real mutation records so an omitted observer subscription cannot be
+  // accidentally covered up by this harness.
+  const mutate = records => {
+    for (const observer of [...observers]) {
+      if (records === undefined) { observer.callback(); continue; }
+      const list = (Array.isArray(records) ? records : [records]).filter(record => {
+        const subscription = observer.options || {};
+        if (record.target !== observer.target && !(subscription.subtree && observer.target?.contains?.(record.target))) return false;
+        if (record.type === 'childList') return !!subscription.childList;
+        if (record.type === 'characterData') return !!subscription.characterData;
+        if (record.type === 'attributes') return !!subscription.attributes && (!subscription.attributeFilter || subscription.attributeFilter.includes(record.attributeName));
+        return false;
+      });
+      if (list.length) observer.callback(list);
+    }
+  };
+  const remountComposer = (draft = box.draft) => {
+    box.isConnected = false; box = makeBox(); box.draft = draft; main.append(box);
+    return box;
+  };
+  const replaceSendButton = () => {
+    sendButton.isConnected = false; sendButton = makeSendButton(); main.append(sendButton);
+    return sendButton;
+  };
   const fire = delay => { for (const [id, timer] of [...timers]) if (timer.delay <= delay && timers.has(id)) { if (!timer.interval) timers.delete(id); timer.callback(); } };
   const advance = (elapsed, fireTimers = true) => {
     const end = now + elapsed;
@@ -154,7 +197,7 @@ function harness(options = {}) {
     now = end;
   };
   const run = (requestId = 'request-1', continuation = false, speed = 'current') => send('run', { sessionId: 'session', requestId, prompt: 'PRIVATE CONTEXT AND QUESTION', continuation, speed });
-  return { state, events, stages, diagnostics, get box() { return box; }, initialBox, fallback, document, location: context.location, send, settle, mutate, fire, advance, run, timers, observers, answer, Element, chrome };
+  return { state, events, stages, diagnostics, get box() { return box; }, get sendButton() { return sendButton; }, initialBox, initialSendButton, fallback, document, location: context.location, send, settle, mutate, fire, advance, run, timers, observers, answer, marker, Element, chrome, remountComposer, replaceSendButton };
 }
 
 test('preparation waits for native readiness without inserting, focusing, sending or changing speed',async()=>{
@@ -165,6 +208,65 @@ test('preparation waits for native readiness without inserting, focusing, sendin
   assert.equal((await preparation).ok,true);assert.equal(h.state.clicks,0);assert.equal(h.box.draft,'');
   assert.equal((await h.send('idle')).empty,true);
   await h.run();await h.settle();assert.equal(h.state.clicks,1);
+});
+
+test('startup diagnostics expose stalled preparation and retain hidden ready marks without a question or native interaction', async () => {
+  const h = harness({ composer: false }); h.document.visibilityState = 'hidden';
+  const preparation = h.send('prepare'); await h.settle();
+  const waiting = await h.send('startup');
+  assert.equal(waiting.stage, 'composer_ready'); assert.equal(waiting.preparation.stage, 'composer_ready');
+  assert.deepEqual(Array.from(waiting.preparation.marks, mark => mark.phase), ['prepare-received']);
+  assert.equal(waiting.marks.length, 0);
+  h.advance(400, false); h.state.composer = true;
+  h.mutate({ type: 'attributes', target: h.box, attributeName: 'id' }); await h.settle();
+  assert.equal((await preparation).ok, true);
+  const ready = await h.send('startup');
+  assert.equal(ready.preparation.stage, 'ready');
+  assert.deepEqual(Array.from(ready.preparation.marks, mark => mark.phase), ['prepare-received', 'prepare-composer-ready', 'prepare-temporary-verified', 'prepare-ready']);
+  assert.equal(ready.preparation.marks.at(-1).elapsedMs, 400);
+  for (const mark of ready.preparation.marks) {
+    assert.deepEqual(Object.keys(mark).sort(), ['at', 'elapsedMs', 'phase', 'visibility']);
+    assert.equal(mark.visibility, 'hidden'); assert.equal(Number.isFinite(mark.at), true); assert.equal(Number.isFinite(mark.elapsedMs), true);
+  }
+  assert.equal(h.state.clicks, 0); assert.equal(h.state.focuses || 0, 0); assert.equal(h.box.draft, '');
+  assert.equal(h.events.length, 0); assert.equal(ready.marks.length, 0);
+  assert.equal(JSON.stringify(ready).includes('PRIVATE CONTEXT AND QUESTION'), false);
+});
+
+for (const attributeName of ['id', 'data-testid', 'aria-label', 'placeholder', 'role', 'inert']) {
+  test(`an in-place ${attributeName} readiness change wakes the composer wait without another DOM mutation`, async () => {
+    const h = harness({ composer: false });
+    await h.run(); await h.settle();
+    assert.equal(h.state.clicks, 0);
+    h.state.composer = true;
+    h.mutate({ type: 'attributes', target: h.box, attributeName: 'data-unrelated' }); await h.settle();
+    assert.equal(h.state.clicks, 0, 'unobserved changes must not spuriously wake the waiter');
+    h.box.setAttribute(attributeName, 'ready');
+    h.mutate({ type: 'attributes', target: h.box, attributeName }); await h.settle();
+    assert.equal(h.state.clicks, 1);
+    assert.equal(h.events.some(event => event.kind === 'error'), false);
+  });
+}
+
+test('Temporary Chat heading text hydration wakes setup without a child-list or attribute mutation', async () => {
+  const h = harness({ temporary: false, temporaryChoice: true, deferTemporaryActivation: true });
+  const headingText = { nodeType: 3, textContent: 'Loading', parentElement: h.marker };
+  h.marker.append(headingText);
+  await h.run(); await h.settle();
+  assert.equal(h.state.temporaryClicks, 1); assert.equal(h.state.clicks, 0);
+  headingText.textContent = 'Temporary Chat'; h.state.temporary = true;
+  h.mutate({ type: 'characterData', target: headingText }); await h.settle();
+  assert.equal(h.state.clicks, 1);
+  assert.equal(h.events.some(event => event.kind === 'error'), false);
+});
+
+test('readiness mutation delivery respects the observed subtree', async () => {
+  const h = harness({ composer: false }); await h.run(); await h.settle();
+  h.state.composer = true;
+  h.mutate({ type: 'attributes', target: new h.Element('DIV'), attributeName: 'id' }); await h.settle();
+  assert.equal(h.state.clicks, 0);
+  h.mutate({ type: 'attributes', target: h.box, attributeName: 'id' }); await h.settle();
+  assert.equal(h.state.clicks, 1);
 });
 
 test('concurrent prepare commands share readiness and native Temporary activation',async()=>{
@@ -533,7 +635,8 @@ test('navigation during submitted acknowledgement never clicks Send or automatic
   let acknowledge; h.state.acknowledge = new Promise(resolve => { acknowledge = resolve; });
   await h.run('request-2', true); await h.settle(); assert.equal(h.state.clicks, 1);
   h.location.pathname = '/c/different'; acknowledge(); await h.settle();
-  assert.equal(h.events.at(-1).code, 'CONVERSATION_CHANGED'); assert.equal(h.events.at(-1).attempted, true);
+  assert.equal(h.events.at(-1).code, 'CONVERSATION_CHANGED'); assert.equal(h.events.at(-1).attempted, false);
+  assert.equal(h.events.at(-1).cancelledBeforeSend, true, 'the adapter knows its native click never occurred');
   await h.run('request-2', true); await h.settle(); assert.equal(h.state.clicks, 1);
 });
 
@@ -683,6 +786,106 @@ test('stop during submitted acknowledgement never clicks and reports the pre-sen
   await h.send('stop', { requestId: 'request-1' }); acknowledge(); await h.settle(); h.fire(300000); await h.settle();
   assert.equal(h.state.clicks, 0); assert.deepEqual(h.events.map(event => event.kind), ['submitted', 'done']); assert.equal(h.events[1].cancelledBeforeSend, true);
 });
+
+test('a composer and Send remount during durable acknowledgement uses only the fresh live control', async () => {
+  let acknowledge; const pending = new Promise(resolve => { acknowledge = resolve; });
+  const h = harness({ acknowledge: pending }); await h.run(); await h.settle();
+  assert.equal(h.events[0].kind, 'submitted'); assert.equal(h.state.clicks, 0);
+  h.remountComposer(); h.replaceSendButton();
+  acknowledge(); await h.settle();
+  assert.equal(h.initialBox.isConnected, false); assert.equal(h.initialSendButton.isConnected, false);
+  assert.equal(h.state.detachedSendClicks || 0, 0);
+  assert.equal(h.state.clicks, 1); assert.equal(h.state.sentDraft, 'PRIVATE CONTEXT AND QUESTION');
+  assert.equal(h.events.some(event => event.kind === 'error'), false);
+  await h.run(); await h.settle(); assert.equal(h.state.clicks, 1, 'duplicate dispatch must not repeat the native click');
+});
+
+for (const response of ['rejected', 'missing', 'throwing']) {
+  test(`a ${response} submission-checkpoint acknowledgement prevents native Send`, async () => {
+    const options = response === 'throwing' ? { submittedThrows: true } : { submittedReply: response === 'rejected' ? { ok: false } : undefined };
+    const h = harness(options); await h.run(); await h.settle();
+    assert.equal(h.state.clicks, 0); assert.equal(h.box.value, 'PRIVATE CONTEXT AND QUESTION');
+    const error = h.events.find(event => event.kind === 'error');
+    assert.equal(error?.code, 'SUBMISSION_NOT_RECORDED'); assert.equal(error.attempted, false);
+    assert.equal(error.cancelledBeforeSend, true);
+    assert.equal(JSON.stringify(h.diagnostics).includes('PRIVATE TRANSPORT DETAIL'), false);
+    assert.equal(JSON.stringify(h.diagnostics).includes('PRIVATE CONTEXT AND QUESTION'), false);
+    await h.send('check', { requestId: 'request-1' }); await h.settle(); assert.equal(h.state.clicks, 0);
+  });
+}
+
+test('content-free startup timings distinguish the durable wait, native click and observed submission while hidden', async () => {
+  let acknowledge; const pending = new Promise(resolve => { acknowledge = resolve; });
+  const h = harness({ acknowledge: pending }); h.document.visibilityState = 'hidden';
+  await h.run(); await h.settle();
+  const before = await h.send('startup');
+  assert.ok(before.marks.some(mark => mark.phase === 'attempt-ack-start'));
+  assert.equal(before.marks.some(mark => mark.phase === 'native-send'), false);
+  h.advance(500, false); acknowledge(); await h.settle();
+  const after = await h.send('startup');
+  const phases = after.marks.map(mark => mark.phase);
+  for (const phase of ['run-received', 'composer-ready', 'temporary-verified', 'draft-inserted', 'send-ready', 'attempt-ack-start', 'attempt-ack-end', 'native-send', 'native-click-return', 'submission-observed']) assert.ok(phases.includes(phase), phase);
+  assert.ok(phases.indexOf('native-send') > phases.indexOf('attempt-ack-end'));
+  assert.ok(phases.indexOf('submission-observed') > phases.indexOf('native-send'));
+  assert.equal(after.marks.find(mark => mark.phase === 'native-send').elapsedMs, 500);
+  assert.ok(after.marks.length <= 24);
+  for (const mark of after.marks) {
+    assert.deepEqual(Object.keys(mark).sort(), ['at', 'elapsedMs', 'phase', 'visibility']);
+    assert.equal(mark.visibility, 'hidden'); assert.equal(Number.isFinite(mark.at), true); assert.equal(Number.isFinite(mark.elapsedMs), true);
+  }
+  assert.equal(JSON.stringify(after).includes('PRIVATE CONTEXT AND QUESTION'), false);
+});
+
+for (const draft of ['', 'A user replaced the native draft']) {
+  test(`a ${draft ? 'changed' : 'cleared'} draft during durable acknowledgement is never submitted`, async () => {
+    let acknowledge; const pending = new Promise(resolve => { acknowledge = resolve; });
+    const h = harness({ acknowledge: pending }); await h.run(); await h.settle();
+    h.box.value = draft; acknowledge(); await h.settle();
+    const error = h.events.find(event => event.kind === 'error');
+    assert.ok(error); assert.equal(error.attempted, false); assert.equal(error.cancelledBeforeSend, true);
+    assert.equal(h.state.clicks, 0); assert.equal(h.box.value, draft);
+    await h.send('check', { requestId: 'request-1' }); await h.settle(); assert.equal(h.state.clicks, 0);
+  });
+}
+
+test('a replacement Send that becomes enabled after acknowledgement is awaited and clicked once', async () => {
+  let acknowledge; const pending = new Promise(resolve => { acknowledge = resolve; });
+  const h = harness({ acknowledge: pending }); await h.run(); await h.settle();
+  h.state.sendEnabled = false; h.replaceSendButton(); acknowledge(); await h.settle();
+  assert.equal(h.state.clicks, 0); assert.equal(h.state.detachedSendClicks || 0, 0);
+  h.state.sendEnabled = true;
+  h.mutate({ type: 'attributes', target: h.sendButton, attributeName: 'disabled' }); await h.settle();
+  assert.equal(h.state.clicks, 1); assert.equal(h.state.detachedSendClicks || 0, 0);
+  assert.equal(h.events.some(event => event.kind === 'error'), false);
+});
+
+for (const change of ['temporary-off', 'native-busy']) {
+  test(`${change} during durable acknowledgement prevents a native click`, async () => {
+    let acknowledge; const pending = new Promise(resolve => { acknowledge = resolve; });
+    const h = harness({ acknowledge: pending }); await h.run(); await h.settle();
+    if (change === 'temporary-off') h.state.temporary = false; else h.state.stop = true;
+    acknowledge(); await h.settle();
+    assert.equal(h.state.clicks, 0);
+    const error = h.events.find(event => event.kind === 'error');
+    assert.ok(error); assert.equal(error.attempted, false); assert.equal(error.cancelledBeforeSend, true);
+  });
+}
+
+for (const action of ['stop', 'release']) {
+  test(`${action} cancels post-acknowledgement readiness and a later enabled Send cannot submit`, async () => {
+    let acknowledge; const pending = new Promise(resolve => { acknowledge = resolve; });
+    const h = harness({ acknowledge: pending }); await h.run(); await h.settle();
+    h.remountComposer(); h.state.sendEnabled = false; h.replaceSendButton(); acknowledge(); await h.settle();
+    assert.equal(h.state.clicks, 0);
+    await h.send(action, { requestId: 'request-1' }); await h.settle();
+    if (action === 'stop') assert.equal(h.box.draft, '', 'Stop must clear the exact owned draft in the remounted live composer');
+    h.state.sendEnabled = true;
+    h.mutate({ type: 'attributes', target: h.sendButton, attributeName: 'disabled' }); h.fire(300000); await h.settle();
+    assert.equal(h.state.clicks, 0); assert.equal(h.state.detachedSendClicks || 0, 0); assert.equal(h.observers.size, 0);
+    assert.equal(h.events.some(event => event.kind === 'error'), false);
+    if (action === 'stop') assert.equal(h.events.find(event => event.kind === 'done')?.cancelledBeforeSend, true);
+  });
+}
 
 test('stop after send completes with an empty answer and preserves verified continuation', async () => {
   const h = harness(); await h.run(); await h.settle(); assert.equal(h.state.clicks, 1); assert.equal(h.state.stop, true);

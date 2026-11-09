@@ -5,6 +5,7 @@
   globalThis.__tmpChatAgent = true;
   const C = TmpCore;
   let current = null, preparation = null, preparedRoute = null, released = false;
+  let preparedStartup = { stage: 'idle', marks: [] };
   const diagnostics = globalThis.__tmpChatAgentDiagnostics = [];
   function diagnostic(event, details = {}) {
     // Fixed event names, stages, counts and flags only. Never retain native
@@ -14,6 +15,14 @@
     console.debug('[tmp.chat agent]', event, details);
   }
   const clock = () => globalThis.performance?.now() ?? Date.now();
+  function startupMark(run, phase) {
+    run.startupAt ??= clock();
+    run.startup ||= [];
+    if (run.startup.some(entry => entry.phase === phase) || run.startup.length >= 24) return;
+    const entry = { phase, at: Date.now(), elapsedMs: Math.max(0, clock() - run.startupAt), visibility: document.visibilityState || 'unknown' };
+    run.startup.push(entry);
+    diagnostic(`startup:${phase}`, entry);
+  }
   function mark(run, phase, details = {}) {
     run.marks ||= new Set();
     if (run.marks.has(phase)) return;
@@ -95,7 +104,10 @@
       if (run) (run.waiters ||= new Set()).add(cancel);
       function finish(error, value) { if (finished) return; finished = true; observer.disconnect(); clearTimeout(timer); run?.waiters?.delete(cancel); error ? reject(error) : resolve(value); }
       function inspect() { try { if (run && halted(run)) { cancel(); return; } const value = check(); if (value) finish(null, value); } catch (e) { finish(e); } }
-      observer.observe(document.documentElement || document, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'readonly', 'aria-disabled', 'aria-hidden', 'aria-pressed', 'contenteditable', 'hidden', 'style', 'class'] });
+      // Hydration can identify an existing composer/control or change the
+      // Temporary heading without inserting any element. Watch the predicates'
+      // inputs, including changes to existing text nodes; never poll for focus.
+      observer.observe(document.documentElement || document, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['id', 'data-testid', 'aria-label', 'placeholder', 'role', 'disabled', 'readonly', 'aria-disabled', 'aria-hidden', 'aria-pressed', 'contenteditable', 'hidden', 'inert', 'style', 'class'] });
       inspect();
     });
   }
@@ -197,6 +209,7 @@
     }
     if (!(stopping || node || users().length > run.baselineUsers || visible(stopButton()))) return;
     run.submissionRecorded = true; run.continuation = true;
+    startupMark(run, 'submission-observed');
     run.answerProofRecorded = !!node;
     rememberConversation(run, node);
   }
@@ -470,9 +483,11 @@
     preparation = run;
     run.promise = (async () => {
       try {
+        run.stage = 'composer_ready'; startupMark(run, 'prepare-received');
         // No focus, draft insertion, preference change, or native Send here.
         await until(() => { const failure = pageProblem('composer_ready'); if (failure) throw failure; return composer(); }, 20000, run);
         if (halted(run)) return { ok: false, code: 'HELPER_RELEASED', stage: 'agent_ready' };
+        startupMark(run, 'prepare-composer-ready'); run.stage = 'temporary_setup';
         if (users().length || assistants().length) throw problem('HELPER_NOT_EMPTY', 'temporary_setup', 'The prepared ChatGPT tab already contains messages. Open it to inspect it. Nothing was sent.');
         if (!temporaryConfirmed()) {
           const toggle = temporaryControl();
@@ -482,26 +497,31 @@
             problem('TEMPORARY_UNVERIFIED', 'temporary_setup', 'Temporary Chat could not be verified after opening its setup. Open the ChatGPT tab to finish setup, then choose Check again. Nothing was sent.'));
         }
         if (halted(run)) return { ok: false, code: 'HELPER_RELEASED', stage: 'agent_ready' };
+        startupMark(run, 'prepare-temporary-verified'); run.stage = 'composer_ready';
         await until(() => { const failure = pageProblem('composer_ready'); if (failure) throw failure; return composer(); }, 20000, run);
         if (halted(run)) return { ok: false, code: 'HELPER_RELEASED', stage: 'agent_ready' };
         const failure = pageProblem('temporary_setup'); if (failure) throw failure;
         if (!temporaryConfirmed()) throw problem('TEMPORARY_UNVERIFIED', 'temporary_setup', 'Temporary Chat could not be verified. Nothing was sent.');
         if (conversationRoute().key !== run.route || preparedRoute !== null && preparedRoute !== run.route || users().length || assistants().length || visible(stopButton())) throw problem('HELPER_CHANGED', 'temporary_setup', 'The prepared ChatGPT tab changed or already contains messages. Open it to inspect it. Nothing was sent.');
         preparedRoute = run.route;
+        run.stage = 'ready'; startupMark(run, 'prepare-ready');
         diagnostic('startup:native-ready', { at: Date.now(), elapsedMs: Date.now() - run.startedAt, documentState: document.readyState });
         return { ok: true, probe: probe() };
       } catch (error) {
+        run.stage = error.stage || 'composer_ready'; startupMark(run, 'prepare-failed');
         return { ok: false, code: /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code || '') ? error.code : 'HELPER_PREPARE', stage: error.stage || 'composer_ready', error: error.code ? error.message : 'The ChatGPT helper could not be prepared. Nothing was sent.' };
-      } finally { cleanup(run); if (preparation === run) preparation = null; }
+      } finally { preparedStartup = { stage: run.stage, marks: run.startup || [] }; cleanup(run); if (preparation === run) preparation = null; }
     })();
     return run.promise;
   }
   async function execute(run) {
     try {
+      startupMark(run, 'run-received');
       setStage(run, 'composer_ready');
       let box = await until(() => { const failure = pageProblem('composer_ready'); if (failure) throw failure; return composer(); }, 20000, run);
       if (halted(run)) return;
       run.box = box;
+      startupMark(run, 'composer-ready');
       // First request must positively identify Temporary Chat before any context is sent.
       setStage(run, 'temporary_setup');
       if (!run.continuation && !temporaryConfirmed()) {
@@ -513,6 +533,7 @@
       }
       const setupFailure = pageProblem('temporary_setup'); if (setupFailure) throw setupFailure;
       verifyContinuation(run);
+      startupMark(run, 'temporary-verified');
       // Switching Temporary Chat can replace the native editor. Resolve the live
       // editor again after setup instead of inserting into a detached old one.
       if (composer() !== box) {
@@ -552,17 +573,42 @@
       const actual = (box.innerText || box.value || '').replace(/\r\n/g, '\n').trim();
       if (!C.sameDraft(actual, run.prompt)) throw problem('DRAFT_MISMATCH', 'draft_insert', 'The ChatGPT draft could not be verified. Open its tab to inspect it. Nothing was sent.');
       run.draftOwned = true;
+      startupMark(run, 'draft-inserted');
       setStage(run, 'send_ready');
-      const button = await until(() => { const failure = pageProblem('send_ready'); if (failure) throw failure; const b = sendButton(); return visible(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true' ? b : null; }, 8000, run, problem('SEND_NOT_READY', 'send_ready', 'The question is in the ChatGPT composer, but its Send control did not become ready. Open its tab to inspect it, then choose Check again. Nothing was sent.'));
+      const sendTimeout = problem('SEND_NOT_READY', 'send_ready', 'The question is in the ChatGPT composer, but its Send control did not become ready. Open its tab to inspect it, then choose Check again. Nothing was sent.');
+      const readySend = () => {
+        const failure = pageProblem('send_ready'); if (failure) throw failure;
+        if (!run.continuation && !temporaryConfirmed()) throw problem('TEMPORARY_UNVERIFIED', 'temporary_setup', 'Temporary Chat could not be verified before submission. Open its tab to inspect it. Nothing was sent.');
+        verifyContinuation(run);
+        const liveBox = composer();
+        if (!liveBox) return null;
+        if (!C.sameDraft(liveBox.innerText || liveBox.value || '', run.prompt)) throw problem('DRAFT_MISMATCH', 'send_ready', 'The ChatGPT draft changed before submission. Open its tab to inspect it. Nothing was sent or overwritten.');
+        run.box = liveBox;
+        if (visible(stopButton())) throw problem('NATIVE_BUSY', 'send_ready', 'ChatGPT is already answering. Open its tab and finish that answer first. Nothing was sent.');
+        const button = sendButton();
+        return visible(button) && !button.disabled && button.getAttribute('aria-disabled') !== 'true' ? { box: liveBox, button } : null;
+      };
+      await until(readySend, 8000, run, sendTimeout);
       if (halted(run)) return;
-      verifyContinuation(run);
+      startupMark(run, 'send-ready');
       run.attempted = true; run.startedAt = Date.now();
       // Mark the attempt before the one and only click. Never automatically replay a send.
-      run.stage = 'send_confirm'; await emit({ kind: 'submitted', stage: 'send_confirm', probe: probe() }, run);
+      run.stage = 'send_confirm'; startupMark(run, 'attempt-ack-start');
+      const acknowledgement = await emit({ kind: 'submitted', stage: 'send_confirm', probe: probe() }, run);
       if (halted(run)) return;
-      verifyContinuation(run);
+      startupMark(run, 'attempt-ack-end');
+      if (!acknowledgement?.ok) throw problem('SUBMISSION_NOT_RECORDED', 'send_confirm', 'The extension could not confirm its submission checkpoint. Nothing was sent. Choose Check again to retry setup.');
+      // Saving the checkpoint yields to the page: React may replace the editor
+      // or Send button. Resolve and validate the live owned draft again. Never
+      // click the stale pre-checkpoint element or insert a replacement draft.
+      await until(readySend, 8000, run, sendTimeout);
+      if (halted(run)) return;
+      const live = readySend();
+      if (!live) throw sendTimeout;
+      run.box = live.box;
       watch(run); if (halted(run)) return;
-      run.clicked = true; diagnostic('startup:native-send', { at: Date.now() }); button.click(); setStage(run, 'send_confirm');
+      // No asynchronous work between the final validation and this single click.
+      run.clicked = true; startupMark(run, 'native-send'); live.button.click(); startupMark(run, 'native-click-return'); setStage(run, 'send_confirm');
       await until(() => users().length > run.baselineUsers || answerNode(run) || visible(stopButton()), 15000, run, problem('SEND_UNCONFIRMED', 'send_confirm', 'The ChatGPT Send control was clicked, but submission could not be confirmed. Open its tab to inspect the existing attempt. Check again only observes it; your question will not be resent.'));
       if (halted(run)) return;
       recordSubmission(run);
@@ -570,15 +616,20 @@
     } catch (error) {
       if (halted(run)) return;
       cleanup(run); run.finished = true;
+      const cancelledBeforeSend = !run.clicked;
+      if (cancelledBeforeSend) run.attempted = false;
+      startupMark(run, 'failed');
       const code = /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code || '') ? error.code : run.attempted ? 'SEND_FAILED' : 'SETUP_FAILED';
       const stage = error.stage || run.stage;
+      run.stage = stage;
       diagnostic('setup-failed', { code, stage, attempted: !!run.attempted, probe: probe() });
-      await emit({ kind: 'error', code, stage, text: error.code ? error.message : run.attempted ? 'The ChatGPT adapter failed after starting a send attempt. Open its tab to inspect it. Your question will not be resent automatically.' : 'The ChatGPT adapter could not finish setup. Open its tab to inspect it, then choose Check again. Nothing was sent.', probe: probe(), attempted: run.attempted }, run);
+      await emit({ kind: 'error', code, stage, text: error.code ? error.message : run.attempted ? 'The ChatGPT adapter failed after starting a send attempt. Open its tab to inspect it. Your question will not be resent automatically.' : 'The ChatGPT adapter could not finish setup. Open its tab to inspect it, then choose Check again. Nothing was sent.', probe: probe(), attempted: run.attempted, ...(cancelledBeforeSend ? { cancelledBeforeSend: true, continuation: !!run.continuation } : {}) }, run);
     }
   }
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id || !message?.type?.startsWith('tmp:')) return;
     diagnostic('command', { type: message.type, active: !!current && !current.finished });
+    if (message.type === 'tmp:startup') { respond({ ok: true, stage: current?.stage || preparation?.stage || 'idle', marks: (current?.startup || []).map(entry => ({ ...entry })), preparation: { stage: preparation?.stage || preparedStartup.stage, marks: (preparation?.startup || preparedStartup.marks).map(entry => ({ ...entry })) } }); return; }
     if (message.type === 'tmp:probe') { respond({ ok: true, protocol: 2, ready: !released, probe: probe() }); return; }
     if (message.type === 'tmp:prepare') { prepareNative().then(respond); return true; }
     if (message.type === 'tmp:idle') {

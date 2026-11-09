@@ -464,6 +464,28 @@ test('pre-click cancellation restores the prior submission state for the next qu
   assert.equal((await h.send('hello')).state.hasSubmitted,true);
   await h.send('send',{question:'another follow-up'});await h.settle();assert.equal(h.calls.filter(c=>c.message?.type==='tmp:run').at(-1).message.continuation,true);
 });
+test('definite pre-click failure restores continuation and Check retries setup without losing first context', async t=>{
+  const h=harness();t.after(h.close);
+  await h.send('context',{context:{selection:'original passage'}});
+  await h.send('send',{question:'first'});await h.settle();
+  let run=h.calls.find(c=>c.message?.type==='tmp:run');
+  const event=value=>h.send('event',{sessionId:run.message.sessionId,requestId:run.message.requestId,event:value},run.id);
+  await event({kind:'submitted'});
+  await event({kind:'error',code:'DRAFT_MISMATCH',stage:'send_ready',text:'Draft changed before click',attempted:false,cancelledBeforeSend:true,continuation:false});
+  let state=(await h.send('hello')).state;
+  assert.equal(state.hasSubmitted,false);assert.equal(state.submitted,false);assert.equal(state.uncertain,false);
+  assert.equal(h.calls.filter(c=>c.message?.type==='tmp:run').length,1,'No automatic replay');
+  await h.send('check');await h.settle();run=h.calls.filter(c=>c.message?.type==='tmp:run').at(-1);
+  assert.equal(run.message.continuation,false);assert.match(run.message.prompt,/original passage/);
+  await event({kind:'submitted'});await event({kind:'done',text:'answer'});
+  await h.send('send',{question:'follow up'});await h.settle();run=h.calls.filter(c=>c.message?.type==='tmp:run').at(-1);
+  await event({kind:'submitted'});
+  await event({kind:'error',text:'Draft changed before follow-up click',attempted:false,cancelledBeforeSend:true,continuation:true});
+  state=(await h.send('hello')).state;assert.equal(state.hasSubmitted,true);assert.equal(state.submitted,false);
+  await h.send('check');await h.settle();run=h.calls.filter(c=>c.message?.type==='tmp:run').at(-1);
+  assert.equal(run.message.continuation,true);assert.equal(run.message.prompt,'follow up');
+});
+
 test('stream events relay compact patches instead of the complete transcript', async t=>{
   const h=harness();t.after(h.close);await h.send('context',{context:{selection:'passage'}});await h.send('send',{question:'why'});await h.settle();
   const run=h.calls.find(c=>c.message?.type==='tmp:run');
