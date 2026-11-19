@@ -1,153 +1,197 @@
-# tmp.chat
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="tmp.chat() — Explore the tangent. Keep the thread." width="100%">
+</p>
 
-Explore the tangent. Keep the thread.
+<p align="center">
+  <strong>A temporary conversation, right where your curiosity starts.</strong><br>
+  Highlight a passage in ChatGPT. Ask a side question. Keep your original thread.
+</p>
 
-A small Chrome/Edge extension that opens a contextual side conversation in the unused space beside a ChatGPT answer. It uses one dedicated, inactive ChatGPT tab and mirrors its answer into a custom panel.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#the-experience">The experience</a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="PRIVACY.md">Privacy</a> ·
+  <a href="docs/DEVELOPMENT.md">Development</a>
+</p>
 
-**Version 0.1.7 prepares the helper when you deliberately open tmp.chat(), while you read and type.** Startup uses a committed ChatGPT document and native readiness checks rather than waiting for every page resource to finish loading. Preparation inserts no context or question and never clicks Send. The v0.1.6 conversation-identity fix, streaming, formatting and visual design are preserved. Automated browser tests use offline fixtures and do not establish live compatibility or live-service speed. This is website automation, not an official OpenAI integration. The previous working source is preserved at Git tag **stable-v0.1.6**; see [CHECKPOINT.md](CHECKPOINT.md).
+<p align="center">
+  <code>Chrome &amp; Edge</code>&nbsp;
+  <code>Manifest V3</code>&nbsp;
+  <code>No runtime dependencies</code>&nbsp;
+  <code>Your ChatGPT account</code>
+</p>
 
-## Install locally
+---
 
-1. Open `chrome://extensions` or `edge://extensions`.
-2. Turn on **Developer mode**.
-3. Choose **Load unpacked** and select this project folder, which contains `manifest.json`.
-4. Open or refresh [ChatGPT](https://chatgpt.com) and sign in normally.
+## A little room for curiosity
 
-When updating an existing installation, replace its files (or select the newly extracted folder), click **Reload** on the extension card, and **refresh the ChatGPT tabs**. Reloading the extension alone does not replace content scripts already running in an open page.
+A useful explanation rarely leads to just one question. A sentence needs clarifying. A code example deserves a closer look. An unfamiliar term opens a tangent.
 
-Start a fresh tangent after updating from an older version. An already open helper can retain its old adapter until its document reloads; re-injecting the same guarded adapter does not replace its active request. Keep or copy anything useful before discarding an old tangent.
+Opening another chat means copying context, switching tabs and finding your way back. Asking in the original conversation changes its direction.
 
-The ZIP in `dist/` can be extracted into its own folder and loaded the same way. No server, build step, npm install, API key, or separate extension account is needed. The extension has not been published to an extension store.
+**tmp.chat gives that small question its own temporary space.** It adds a contextual side panel to ChatGPT, designed to feel like a natural part of the page rather than another dashboard.
 
-## Use
+> **Project status:** an experimental, unofficial browser extension. The default branch uses the **v0.1.7 working checkpoint**, with documentation added for this repository. First-question latency and compatibility with future ChatGPT interface changes remain active concerns. This is not an official OpenAI integration or a production-stability guarantee.
 
-1. Highlight text within one ChatGPT assistant answer.
-2. Choose **tmp.chat()** beside the selection.
-3. Ask your question in the margin panel. `Enter` sends; `Shift+Enter` adds a line.
-4. Opening the panel starts preparing one dedicated **inactive tab** and verifies Temporary Chat. On Send, tmp.chat rechecks the native UI, inserts the context and question, and sends once. An immediate submission joins the same preparation task.
-5. Answers stream into the panel. Follow-ups reuse the same temporary chat, without copying the original context again.
+## The experience
 
-If selection is unavailable, open tmp.chat from its toolbar icon and type a question immediately. **Add context · optional** accepts pasted text. Manual opening prepares the same single helper. Merely highlighting text or loading a ChatGPT page does not start preparation. An existing tangent in another tab cannot be replaced by this fallback.
+1. **Select** a passage in one ChatGPT assistant answer.
+2. **Choose `tmp.chat()`** beside the selection.
+3. **Ask** your question in the side panel.
+4. **Explore** follow-ups without adding messages to the original chat.
+5. **Minimize, keep or discard** when the tangent has served its purpose.
 
-An unused helper is eligible for cleanup about three minutes after opening. Cleanup requires a verified empty native editor, no native messages or request, an inactive tab and its unchanged initial helper URL. Native drafts, focused helpers, changed/unverifiable pages and submitted conversations are retained. The panel's unsent question and pasted context survive cleanup; Send can prepare a new helper. Browser alarms may run late. Minimizing preserves the same pill and any existing conversation.
+The main conversation stays in place. The compact horizontal pill lets you put the tangent aside and return to it later.
 
-The extra tab is visible in your browser's tab bar. It does not take focus unless you choose **Open ChatGPT** or **Keep in ChatGPT**. It uses the signed-in account's ordinary capabilities and limits; it does not create a free quota or change your plan.
+<p align="center">
+  <img src="docs/assets/panel-preview.png" alt="Offline demonstration showing tmp.chat beside a sample explanation of attention" width="100%">
+</p>
 
-- **Minimize / Escape:** preserve the tangent and collapse the panel.
-- **Copy:** copy the visible side conversation, without the hidden context prompt.
-- **Keep in ChatGPT:** hand the background tab back to you and open it. **Choose ChatGPT's own Save chat action to save it in history.** The extension does not claim it has been saved and will no longer close that tab.
-- **Discard:** confirm dismissal, close the dedicated tab, and clear the extension's session data.
-- **Stop:** ask the native ChatGPT UI to stop generating.
-- **Toolbar icon:** reopen or minimize tmp.chat on a ChatGPT page.
+<p align="center"><sub>Interface demonstration from a local test fixture, not a personal chat or evidence of current live-service compatibility.</sub></p>
 
-One tangent is supported at a time across your ChatGPT tabs. A new selection cannot silently replace an existing conversation.
+### Small by design
 
-## Answers and response speed
-
-Answers are brief by default, with short paragraphs, bullets, and small code examples when useful. Follow-ups can request more detail. This prompt is guidance to ChatGPT, not a guarantee of response length or format.
-
-The panel preserves supported answer parts in order, including paragraphs, headings, lists, links, tables, and code blocks. Div-based CodeMirror and Monaco editors are normalized into static code with line breaks and indentation. Native Run buttons, syntax-colouring machinery, and interactive components are not copied. Interactive diagrams, maps, images, and other unsupported visuals show a notice with **View in ChatGPT**, which opens the existing helper without keeping, saving, or releasing the tangent. Text around an unsupported visual is retained. If extraction reaches its size or structure limit, **Open full answer** makes that limit visible.
-
-Text streams while ChatGPT generates it; the panel does not wait for the entire answer before showing text. Structured formatting is reconciled at completion. Model thinking time, helper startup, and network latency can still delay the first visible text.
-
-**Response speed** defaults to **Use current ChatGPT setting**, which makes no speed-control changes. **Prefer Instant** is an optional browser-local preference that looks for an Instant option in the helper's native composer effort menu before sending. It does not use the global model picker or substitute another named model. If no supported control or Instant option is found, it leaves the current setting and reports that Instant was unavailable. If it clicks an option but cannot verify the result, it pauses before sending and asks you to inspect the helper. Availability and native labels vary by account and rollout. ChatGPT may share preferences across chats, so choosing Instant may also affect its defaults outside the helper. The extension cannot guarantee a tab-specific setting or eliminate startup/network delays. This new automation requires signed-in manual verification.
-
-## Layout
-
-The panel is 344 pixels wide. It measures visible text lines, images and other media, tables, and the native composer. When enough right-side whitespace is available, tmp.chat uses it. Otherwise it reserves only the space needed on the shared conversation shell, then verifies the resulting layout. If content cannot move safely or the reading column would become too narrow, it collapses to the same horizontal pill instead of showing an overlapping panel.
-
-Light/dark themes follow ChatGPT. The panel and selection action have isolated styles. Minimizing, compact fallback, and closing release all reserved space and restore the site's original inline layout properties. The minimized pill retains its icon, tmp.chat label, and expand icon.
-
-Layout measurement is bounded to 4,000 text nodes. If a very large page exceeds that limit, tmp.chat stays compact rather than treating unchecked content as empty space.
-
-Version 0.1.2 preserves this layout and the horizontal pill. Some live overlap situations reported during testing still need separate investigation; this release prioritizes connecting questions, detecting answers, and selection.
-
-## Reliability and efficiency
-
-- No runtime dependencies, external fonts, analytics, content servers, private ChatGPT endpoints, or authentication-token extraction.
-- The helper is prepared only after deliberate panel opening or an explicit Send. Highlighting alone and passive page loading stay lazy. A single preparation promise is shared with Send; it does not create a pool of helpers.
-- One helper and one in-flight question; follow-ups reuse both the tab and conversation.
-- Context is capped at 2,400 selected characters, 4,200 nearby characters, and 1,600 characters from the original user question. Questions are capped at 4,000 characters.
-- A bounded assistant role can identify early response text without waiting for native copy/search enrichment. The verified active answer is cached; a structural observer detects replacement of the answer or its container.
-- First available text is extracted directly from a relevant DOM mutation callback. Later updates use elapsed-time coalescing at a target of 120 milliseconds; a new meaningful mutation can flush even when a hidden-tab timer is overdue. There is no perpetual page-scraping loop. Browser freezing and native model/network delays remain outside this guarantee.
-- Stream messages carry appended text or a replacement when ChatGPT revises text. Sequence/offset checks reject duplicate or missing deltas and recover existing output without repeating native submission. The panel appends to the active text node and preserves completed bubbles when a follow-up is added. It does not reprocess history or resize the composer on each ordinary text patch.
-- Structured formatting is rendered at completion using an allowlist of elements and safe links; a final format-only change also updates the bubble. Code whitespace, ordering, bounds and rich-content fallbacks remain in the canonical extractor.
-- Stream snapshots are coalesced in browser-session storage; final states are flushed immediately. Transcript state is bounded to 30 question/answer turns and a 240,000-character threshold for starting another turn, with a 64,000-character answer cap.
-- The helper is protected against automatic tab discarding while owned. A heartbeat and watchdog run only during requests. A separate one-shot alarm checks unused helper expiry; no polling or synthetic activity keeps the page running.
-- Warm requests probe the existing document-bound adapter rather than routinely reinjecting it. A missing/reloaded adapter is reconnected, but its conversation proof is never reconstructed to authorize follow-ups.
-- Ambiguous send failures are never automatically replayed. **Check again** observes an existing attempt, or retries setup only after a positively reported pre-send failure.
-- Follow-ups verify continuity in the same helper document using retained message evidence or a previously known native conversation ID corroborated by bounded live turns. Query changes alone do not invalidate that proof. Adopting a canonical `/c/id` from the initial page requires that exact native ID and a positive Temporary Chat marker. Different concrete conversations, contradictory identity, explicit Temporary Chat-off state, missing evidence, and a reloaded adapter remain blocked. Verification repeats after setup waits and immediately before Send.
-- Source-tab closure and navigation away from ChatGPT clean up the helper, unless it has been explicitly handed back to you.
-
-Loading a second ChatGPT page still costs browser memory and startup time. “Dependency-free” does not mean that page has no cost.
-
-## If a request needs attention
-
-Choose **Open ChatGPT** to inspect the dedicated tab. Finish sign-in, a native confirmation, or Temporary Chat setup there, then return and choose **Check again**. The extension will not bypass verification screens or guess whether a failed send should be repeated.
-
-The panel now shows the current connection step and a short error code. Page-load and adapter-readiness checks are separate from waiting for ChatGPT's composer. Temporary Chat must be positively verified before inserting context. If a setup dialog asks you to choose personalized or unpersonalized behavior, choose that preference yourself; the extension does not choose it for you.
-
-| Error code | What to inspect |
+| Feature | What it gives you |
 | --- | --- |
-| `HELPER_LOAD_TIMEOUT` / `HELPER_NAVIGATION` | Helper navigation or page loading. |
-| `HELPER_INJECTION` / `HELPER_HANDSHAKE` | Whether the helper's extension adapter attached and acknowledged readiness. |
-| `HELPER_PREPARE_TIMEOUT` / `HELPER_CHANGED` / `HELPER_NOT_EMPTY` | Native preparation did not finish, or the prepared tab changed/acquired messages before the first question. Inspect it; nothing was sent. |
-| `SIGN_IN_REQUIRED` | Native sign-in or an authentication gate. |
-| `TEMPORARY_UNVERIFIED` / `TEMPORARY_CHOICE_REQUIRED` | Temporary Chat state or a native setup choice. |
-| `SPEED_UNVERIFIED` | An opt-in Instant click could not be verified. Inspect the helper, or choose the current setting before checking again; nothing was sent. |
-| `CONVERSATION_CHANGED` | The helper's previous conversation identity could not be verified. Return to the original conversation. Check can retry a positively unsent follow-up once its identity is restored; ambiguous attempts remain observation-only. |
-| `COMPOSER_NOT_FOUND` / `DRAFT_INSERT_FAILED` | The editable input or draft insertion. |
-| `SEND_NOT_READY` | The draft exists but native Send is not ready; no send was attempted. |
-| `SEND_UNCONFIRMED` | Send was clicked, but the resulting turn was not recognized. Check only observes that attempt. |
-| `RESPONSE_NOT_FOUND` / `RESPONSE_TIMEOUT` | A missing or unfinished assistant response after an existing send attempt. |
+| Context from a selected passage | Less copying and re-explaining before asking a small question. |
+| A margin panel and compact pill | A side conversation that can get out of the way. |
+| Progressive text updates | Answer text is mirrored as the adapter detects it. |
+| Readable text and code | Supported formatting, indentation, lists, links and tables. |
+| Manual entry | Type a question and optionally paste context if selection is unavailable. |
+| One tangent at a time | A clear relationship between the source chat, panel and helper. |
+| No separate AI account or API key | Uses the ChatGPT session already in your browser. |
 
-For ambiguous attempts, **Check again** refreshes the local DOM adapters and observes the same request. It never dispatches the prompt again. A positively reported pre-send setup failure can be deliberately retried with Check.
+## Install
 
-If the native page reloads during a temporary conversation, the extension refuses to send follow-ups into an unverified replacement conversation. Keep/copy the available text, then discard and begin a new tangent. Browser restart clears the extension's session transcript. Restored helper tabs without their identifying marker may need manual closure.
+### Requirements
 
-The adapter deliberately refuses to send context if it cannot positively verify Temporary Chat. Composer and setup selectors are near the top of `agent.js`; shared selection detection is in `lib/selection.js`, and complete-answer extraction is in `lib/answer.js`. The newer renderer is recognized by explicit native speaker headings and bounded assistant containers. Available native message keys are compared locally to distinguish new answers from old remounts; their values are never logged or sent to an extension server. Support for attachments, voice, native branching, and parallel tangents is outside this version.
+- Microsoft Edge or Google Chrome with Manifest V3 support. The manifest specifies Chromium 120 or later; website changes can still affect compatibility.
+- A signed-in account at [chatgpt.com](https://chatgpt.com).
+- Access to this repository. It is private, so viewing or cloning requires authorization.
 
-## Diagnostics
+**Using the extension requires no Node.js, npm install, build step or extension-operated server.** Development tools are optional.
 
-Startup diagnostics use `startup:send`, `startup:phase`, `startup:prepared`, helper `startup:native-ready` and `startup:native-send`. They contain timestamps, elapsed times, fixed stages and readiness flags only. Compare Send-to-native-Send separately from native-Send-to-first-extract and first-extract-to-panel-commit. Preparation can begin before Send. These logs do not measure server processing or physical paint.
+### Load the extension
 
-Open Edge DevTools on the ChatGPT tab, enable **Verbose** console messages, and filter for `tmp.chat`. Selection diagnostics report the event source, accepted/rejected reason, DOM strategy, and structural metadata for rejected ranges. They contain tag names, known speaker roles, and lengths, not selected text, element IDs, or full labels. Input diagnostics report enabled/disabled states; messaging diagnostics report command names and success/failure. The last 60 UI records are also available as `__tmpChatDiagnostics` when the console execution context is set to this extension's content script.
+1. Download this repository with **Code → Download ZIP**, then extract it. Alternatively, clone it:
 
-Inspect the extension's service worker from `edge://extensions` for worker diagnostics. The helper tab logs agent setup, submission state, cancellation, and error codes. Readiness probes contain only document state, known booleans, and bounded counts for visible/hidden editors, dialogs, and message roots. Native error text is classified locally rather than copied into logs. **These diagnostics do not include selected text, questions, answers, or credentials.**
+   ```sh
+   git clone https://github.com/Sha1em/tmp.chat.git
+   ```
 
-Streaming diagnostics add bounded first-occurrence timestamps: helper `stream:observe`, `stream:root`, `stream:extract`, and `stream:emit`; worker `stream:first-receive`, `stream:first-handle`, and `stream:first-forward`; panel `stream:first-receive` and `stream:first-commit`. Helper completion includes extraction/discovery counts. An observe mark may precede nonempty text; extraction marks indicate actual text. These describe extension processing, not model token-generation time or physical pixel presentation. `stream:gap` means the panel requested an existing-output snapshot. Diagnostics contain timings, visibility, counts and lengths only.
+2. Open `edge://extensions` or `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Select **Load unpacked** and choose the extracted/cloned folder containing `manifest.json`.
+5. Open or refresh ChatGPT and sign in normally.
+6. Highlight part of an assistant answer and choose **`tmp.chat()`**.
 
-Helper `conversation:canonical-bound` records that the first owned answer established its canonical route. `conversation:verified` logs only whether a canonical route was adopted, whether stable native identity was available, and a matching-anchor count. `conversation:rejected` records a fixed reason such as `route`, `anchor`, `native-identity`, `canonical-route`, `temporary-off`, or `document`. The last 60 content-free agent records are available as `__tmpChatAgentDiagnostics` in the helper's extension execution context; readiness/error probes also retain the allowlisted `continuationReason`. Native conversation/message IDs, paths and query strings are never logged. The continuity proof remains in helper memory; reload does not reconstruct it from a Temporary Chat marker alone.
+The extension is not published to an extension store. GitHub's source ZIP is different from a generated extension ZIP; both can be extracted and loaded by selecting the folder containing `manifest.json`.
 
-The `selection:detected` reason is useful when a native ChatGPT selection toolbar appears but tmp.chat does not: `not-assistant` indicates an unrecognized response wrapper; `cross-message` means the selection spans separate turns; `outside-document`/`excluded-ui` protects extension fields and native editors. `rpc:failed` indicates an extension messaging or worker-state problem.
+### Updating an existing installation
 
-On October 31, 2026, v0.1.2 signed-in Edge testing verified the intended helper URL, visible Temporary Chat state, manual question submission, recovery of its existing answer without replay, a fresh highlight-to-answer flow without Check, and a subsequent real answer in the same temporary conversation. The native Ask ChatGPT action and the extension's then-labelled Ask tmp.chat action were visible together. Minimizing showed the preserved horizontal pill and released the source column. The main conversation's composer was left empty and no messages were sent into it. Browser inspection later stopped during cleanup because Computer Use could not verify the current Edge URL; cleanup after that point was not verified.
+Keep or copy any useful tangent first. Update the extension files, click **Reload** on its extension card, and **refresh your ChatGPT tabs**. Reloading the extension alone does not replace content scripts in pages that are already open. Start a fresh tangent after updating.
 
-On November 3, 2026, signed-in Edge reproduced v0.1.5's first-answer success followed by `CONVERSATION_CHANGED`. The helper's live diagnostic reason was `canonical-route`; structural checks confirmed the canonical URL, an opaque native conversation ID distinct from its URL ID, no old Temporary marker, and a visible Save chat button in the main header. After reloading the final v0.1.6 correction, a fresh question returned `11` and a contextual follow-up returned `22` in the same tmp.chat tangent, without Check or replay. This verifies the reported basic follow-up flow on that account. Longer hidden-tab periods, complete multi-part answers, current code editor markup, rich-content fallbacks, streaming/final formatting, and optional Instant selection—including whether the native setting affects other chats—also need current verification. Broader testing includes sign-in/setup gates, limits, long/tool-rich responses, reported image/zoom/sidebar overlap cases, and native Save chat after Keep. Fixture tests are not evidence of live compatibility. The separate completion heuristic and final-delivery reliability backlog remains open.
+## Everyday controls
 
-## Development and verification
+| Control | Behaviour |
+| --- | --- |
+| **Enter** / **Shift+Enter** | Send a question / insert a new line. |
+| **Minimize** / **Escape** | Preserve the tangent and collapse it into the horizontal pill. |
+| **Toolbar icon** | Open or minimize tmp.chat on a ChatGPT page. |
+| **Copy** | Copy the visible side conversation without the hidden context prompt. |
+| **Stop** | Ask the helper's native ChatGPT interface to stop generating. |
+| **Open / View in ChatGPT** | Inspect the existing helper. Ownership and discard behaviour remain unchanged. |
+| **Keep in ChatGPT** | Hand the helper back to you; the extension stops managing that tab. Use ChatGPT's own save action to retain it in history. Keep does not itself confirm a save. |
+| **Discard** | After confirmation, close the owned helper and clear the extension's tangent state. |
 
-The same signed-in v0.1.6 tangent also completed a second contextual follow-up, returning `23` after `11` and `22`. The installed extension was reloaded and the source tab refreshed before this test; the original chat's composer remained empty.
+If selection is unavailable, use the toolbar icon, type a question and optionally use **Add context**. Another ChatGPT tab cannot silently replace an existing tangent.
 
-Node.js 22 or later is sufficient. No dependencies need installing.
+## Your account, with clear boundaries
 
-The v0.1.2 baseline passed manifest/runtime checks, 62 unit tests, the integrated offline Edge regression suite, and ZIP integrity checks. Run the commands below for the current version. The signed-in results above are separate from fixture tests.
+tmp.chat opens **one real, inactive helper tab**, verifies native Temporary Chat, and submits through the native composer. That tab remains visible in the browser's tab bar and consumes memory.
 
-The v0.1.7 startup implementation has controlled offline before/after measurements; signed-in startup acceptance remains pending. Details and resource/measurement limits are recorded in the source repository's `STARTUP-v0.1.7.md`. To run the focused startup benchmark plus real alarm-driven unused-helper cleanup and local-draft restoration, use `node scripts/browser-smoke.cjs --startup-only`. Its held-resource fixture is deliberately synthetic; it does not predict ChatGPT response times. The focused helper suite is `node scripts/browser-smoke.cjs --helper-only`.
+Opening the panel prepares the helper while you read and type. **Selected context and your question are inserted only when you press Send.** Follow-ups reuse the same helper conversation without resending the original context.
 
-```sh
-npm run check
-npm test
-npm run test:browser
-npm run package
+The extension does not provide a separate free quota, upgrade your model or change account usage limits. **Prefer Instant** optionally attempts a supported native speed control; availability varies and ChatGPT may share that preference across chats.
+
+```mermaid
+flowchart LR
+    A["Select text + ask in the panel"] --> B["Extension service worker"]
+    B --> C["One native Temporary Chat helper"]
+    C -->|"Observed answer updates"| B
+    B -->|"Progressive text"| A
 ```
 
-For the focused offline streaming suite, run `node scripts/browser-smoke.cjs --streaming-only`. It holds native generation open, requires partial text before completion, and tests missing metadata, attribute-only discovery, character-data updates, root/main replacement, rewrites, code whitespace, missed patches, minimize/restore and freeze/resume. It asserts a visible source and hidden helper. Exploratory first-text and page-work counters are written to `.test-artifacts/streaming-timings.json`; these headless/debugger-attached fixture measurements are not signed-in benchmarks.
+See the [architecture guide](docs/ARCHITECTURE.md) for components, request flow, streaming and safety checks.
 
-On Windows PowerShell with restricted script execution, use `npm.cmd` instead of `npm`.
+## Privacy, without a second AI service
 
-The browser smoke test launches an isolated headless Edge/Chromium profile. **All ChatGPT requests are intercepted and served from local fixtures.** It loads the real unpacked extension and tests the service worker, lazy tab creation, composer insertion, streaming, duplicate-send protection, follow-ups, safe response rendering, responsive layout, dark mode, minimization, and discard cleanup. UI regressions use pointer hit-testing and keyboard/text-input events and include a native-style toolbar that immediately clears selection, the observed native speaker/response wrappers without legacy selectors, manual drafts and sending, cross-tab ownership refresh, media/composer collisions, and layout restoration. Helper regressions cover delayed SPA editors, hidden legacy textareas, visible ProseMirror input, personalization-choice blocking/resume, and ambiguous send confirmation without replay. Rich-answer cases include multiple sibling response sources, exact div-editor code whitespace, text after unsupported visuals, final format-only reconciliation, and opening the existing helper without releasing the tangent. Copy uses a fixture clipboard stub so the test does not overwrite your clipboard. Screenshots are written to `.test-artifacts/`.
+- No tmp.chat-operated AI server or conversation database.
+- No third-party analytics, external fonts or content-tracking endpoint in the extension.
+- No API keys, authentication-token extraction or private ChatGPT endpoints.
+- Bounded context and transcripts in browser-session storage; the speed preference is stored separately in local extension storage.
+- Host access restricted to `https://chatgpt.com/*`.
 
-On another machine, set `TMP_CHAT_BROWSER` to your Chromium browser executable if it is not detected automatically. Unit tests cover context bounds, layout, rendering limits, worker restart, ownership, ambiguous sends, and cleanup.
+**ChatGPT receives and processes submitted questions and context through OpenAI's services.** AI inference is not running on your device. Discard clears extension state and closes the helper; it does not promise immediate deletion from OpenAI's systems.
 
-See [PRIVACY.md](PRIVACY.md) for data handling and permissions.
+See [PRIVACY.md](PRIVACY.md) for the complete data flow, permissions, retention boundaries and lifecycle.
+
+## What to expect today
+
+| Area | Current boundary |
+| --- | --- |
+| First answer | A fresh helper can be noticeably slower than follow-ups. A reliable first-response speed improvement has not been established. |
+| Website compatibility | Native controls and response markup can change. This is website automation, so updates may be needed. |
+| Streaming formatting | Text arrives progressively; structured formatting is reconciled at completion. |
+| Rich content | Images, maps and interactive visuals are not reproduced in full. Inspect them in the native helper. |
+| Completion | Extraction and completion heuristics have limits; inspect the helper if an answer appears incomplete. |
+| Layout | The panel tries to use whitespace, reserve space or collapse. Some live overlap cases still need investigation. |
+| Conversation scope | One tangent and one in-flight question. Attachments, voice, native branching and parallel tangents are outside this version. |
+| Recovery | Ambiguous sends are observed rather than automatically replayed. Reloaded helpers cannot silently reconstruct conversation proof. |
+
+If something stalls, choose **Open ChatGPT**, inspect sign-in/setup and return to **Check again**. Preserve useful text before discarding. See [troubleshooting](docs/TROUBLESHOOTING.md).
+
+## Checkpoints and experiments
+
+| Version | Role |
+| --- | --- |
+| **v0.1.7** · `checkpoint-v0.1.7` | Recommended working checkpoint used by this branch. Adds preparation when the panel opens. |
+| **v0.1.6** · `stable-v0.1.6` | Earlier recovery checkpoint with verified basic signed-in follow-ups. |
+| **v0.1.9** · `fix/hidden-submission-v0.1.9` | Experimental readiness/submission work. No confirmed live speed gain. |
+
+The tags remain unchanged. The default branch adds documentation on top of v0.1.7; it does not incorporate the experimental v0.1.9 runtime. See [CHANGELOG.md](CHANGELOG.md) and [recovery instructions](CHECKPOINT.md).
+
+## For developers
+
+Node.js **22 or later** is sufficient. No dependencies need installing.
+
+```sh
+npm run check          # Manifest, runtime syntax and dependency boundaries
+npm test              # Unit and regression tests
+npm run test:browser  # Real extension with intercepted, offline ChatGPT fixtures
+npm run package       # Generate dist/tmp.chat-0.1.7.zip
+```
+
+On restricted Windows PowerShell, use `npm.cmd` instead of `npm`.
+
+Fixture tests validate behaviour under controlled conditions. They do **not** establish current signed-in compatibility, response latency or server-side retention.
+
+| Read next | Contents |
+| --- | --- |
+| [Architecture](docs/ARCHITECTURE.md) | Components, request flow, streaming, limits and safety boundaries. |
+| [Development](docs/DEVELOPMENT.md) | Setup, verification, packaging and branch discipline. |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Connection stages, error codes, recovery and diagnostics. |
+| [Technical notes](docs/TECHNICAL_NOTES.md) | Preserved v0.1.7 implementation and historical verification notes. |
+| [Contributing](CONTRIBUTING.md) | How to report an issue or propose a focused change. |
+| [Privacy](PRIVACY.md) | What is processed, where it is stored and why permissions exist. |
+
+## License and affiliation
+
+A software license has not yet been selected. Access to the source does not by itself grant an open-source license.
+
+tmp.chat is independent and is not affiliated with, endorsed by or maintained by OpenAI. ChatGPT is an OpenAI product. Browser and product names belong to their respective owners.
+
+---
+
+<p align="center"><strong>tmp.chat() — Explore the tangent. Keep the thread.</strong></p>
